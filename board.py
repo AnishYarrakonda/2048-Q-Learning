@@ -145,6 +145,18 @@ class Board:
         return None
     
     
+    # returns if the game is done and the winner
+    def is_game_over(self: "Board", row, col) -> tuple[bool, int]:
+        if self.is_full():
+            return True, 0  # Draw
+
+        # Check if the last move resulted in a win
+        if self.full_check(row, col):
+            winner = 2 if self.turn % 2 == 0 else 1
+            return True, winner
+
+        return False, 0
+
 
     # prints the board state
     def __str__(self: "Board") -> str:
