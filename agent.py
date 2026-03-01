@@ -63,8 +63,9 @@ class ReplayBuffer:
 
 
 class Agent:
-    BATCH_SIZE = 64
+    BATCH_SIZE = 256
     MIN_BUFFER = 1000
+    TARGET_UPDATE_FREQ = 500
 
     def __init__(
         self: "Agent",
@@ -76,6 +77,9 @@ class Agent:
     ) -> None:
         self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
         self.model: nn.Module = ConnectFourCNN().to(self.device)
+        self.target_model: nn.Module = ConnectFourCNN().to(self.device)
+        self.target_model.load_state_dict(self.model.state_dict())
+        self.target_model.eval()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
         self.loss_fn = nn.MSELoss()
         self.epsilon = epsilon
@@ -83,6 +87,8 @@ class Agent:
         self.epsilon_min = epsilon_min
         self.gamma = gamma
         self.replay_buffer = ReplayBuffer(capacity=50_000)
+        self._update_counter = 0
+        self._push_count = 0
         self.model.eval()
 
     def predict(self: "Agent", board: Board) -> torch.Tensor:
@@ -124,10 +130,8 @@ class Agent:
         self.model.train()
         q_values = self.model(state_batch)
         q_selected = q_values.gather(1, action_batch.unsqueeze(1)).squeeze(1)
-
-        self.model.eval()
         with torch.no_grad():
-            next_q_values = self.model(next_state_batch)
+            next_q_values = self.target_model(next_state_batch)
             max_next_q = next_q_values.max(dim=1).values
             target_values = reward_batch + (1.0 - done_batch) * self.gamma * max_next_q
 
@@ -136,6 +140,9 @@ class Agent:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
+        self._update_counter += 1
+        if self._update_counter % self.TARGET_UPDATE_FREQ == 0:
+            self.target_model.load_state_dict(self.model.state_dict())
         self.model.eval()
 
     def push(
@@ -153,3 +160,4 @@ class Agent:
         if cpu_next_state.dim() > 1:
             cpu_next_state = cpu_next_state.squeeze(0)
         self.replay_buffer.push(cpu_state, action, float(reward), cpu_next_state, bool(done))
+        self._push_count += 1

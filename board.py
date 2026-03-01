@@ -2,7 +2,8 @@
 import torch
 from typing import Optional
 
-# use gpu for faster operations
+# board ops stay on CPU; NN input gets moved to accelerator in board_to_tensor
+_cpu = torch.device("cpu")
 device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
 # board object
@@ -27,8 +28,8 @@ class Board:
     # create board
     def __init__(self: "Board") -> None:
         # stores bit boards for each player
-        self.player1_bits = torch.zeros((Board.ROWS, Board.COLS), dtype=torch.float32, device=device)
-        self.player2_bits = torch.zeros((Board.ROWS, Board.COLS), dtype=torch.float32, device=device)
+        self.player1_bits = torch.zeros((Board.ROWS, Board.COLS), dtype=torch.float32, device=_cpu)
+        self.player2_bits = torch.zeros((Board.ROWS, Board.COLS), dtype=torch.float32, device=_cpu)
 
         # tracks the current game turn (0 for player 1, 1 for player 2)
         self.turn = 0

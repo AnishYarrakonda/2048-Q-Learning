@@ -37,7 +37,7 @@ class Config(TypedDict):
 
 
 DEFAULT_CONFIG: Config = {
-    "lr": 0.01,
+    "lr": 0.001,
     "epsilon": 1.0,
     "epsilon_decay": 0.997,
     "epsilon_min": 0.05,
@@ -290,6 +290,7 @@ def load_weights_for_resume(agent: Agent, model_path: str) -> None:
         raise ValueError("Unsupported checkpoint format. Expected a state_dict dictionary.")
 
     agent.model.load_state_dict(state_dict)
+    agent.target_model.load_state_dict(agent.model.state_dict())
 
 
 def format_progress_line(
@@ -367,7 +368,8 @@ def play_game(
                 if train:
                     next_state = Board.board_to_tensor(board=board)
                     agent.push(state, action, loss_reward, next_state, done)
-                    agent.train_step()
+                    if agent._push_count % 4 == 0:
+                        agent.train_step()
                 break
 
             done, winner = board.game_over(row, action)
@@ -383,7 +385,8 @@ def play_game(
                     reward = loss_reward
                 next_state = Board.board_to_tensor(board=board)
                 agent.push(state, action, reward, next_state, done)
-                agent.train_step()
+                if agent._push_count % 4 == 0:
+                    agent.train_step()
                 last_move_by_player[acting_player] = (state.detach().clone(), action)
 
                 # Ensure the losing player's most recent move gets a terminal loss update.
@@ -398,7 +401,8 @@ def play_game(
                             next_state,
                             True,
                         )
-                        agent.train_step()
+                        if agent._push_count % 4 == 0:
+                            agent.train_step()
     finally:
         if force_zero_epsilon:
             agent.epsilon = original_epsilon
