@@ -5,8 +5,55 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from board import Board
+
+
+class InceptionBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        assert out_channels % 4 == 0
+        branch = out_channels // 4
+        self.branch1x1 = nn.Conv2d(in_channels, branch, kernel_size=1, padding=0)
+        # Use 'same' padding per-dimension to keep spatial dims consistent
+        self.branch1x4 = nn.Conv2d(in_channels, branch, kernel_size=(1, 4), padding=(0, 1))
+        self.branch4x1 = nn.Conv2d(in_channels, branch, kernel_size=(4, 1), padding=(1, 0))
+        self.branch3x3 = nn.Conv2d(in_channels, branch, kernel_size=3, padding=1)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b1 = self.branch1x1(x)
+        b2 = self.branch1x4(x)
+        b3 = self.branch4x1(x)
+        b4 = self.branch3x3(x)
+        # Ensure spatial dims match by center-padding each branch to the largest H and W across branches
+        import torch.nn.functional as F
+
+        hs = [t.size(2) for t in (b1, b2, b3, b4)]
+        ws = [t.size(3) for t in (b1, b2, b3, b4)]
+        target_h = max(hs)
+        target_w = max(ws)
+
+        def center_pad(t: torch.Tensor, th: int, tw: int) -> torch.Tensor:
+            h, w = t.size(2), t.size(3)
+            pad_h = th - h
+            pad_w = tw - w
+            pad_top = pad_h // 2
+            pad_bottom = pad_h - pad_top
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+            # F.pad uses (left, right, top, bottom)
+            return F.pad(t, (pad_left, pad_right, pad_top, pad_bottom))
+
+        b1p = center_pad(b1, target_h, target_w) if (b1.size(2) != target_h or b1.size(3) != target_w) else b1
+        b2p = center_pad(b2, target_h, target_w) if (b2.size(2) != target_h or b2.size(3) != target_w) else b2
+        b3p = center_pad(b3, target_h, target_w) if (b3.size(2) != target_h or b3.size(3) != target_w) else b3
+        b4p = center_pad(b4, target_h, target_w) if (b4.size(2) != target_h or b4.size(3) != target_w) else b4
+
+        out = torch.cat([b1p, b2p, b3p, b4p], dim=1)
+        return self.relu(self.bn(out))
 
 
 class ConnectFourCNN(nn.Module):
@@ -15,17 +62,11 @@ class ConnectFourCNN(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(2, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            InceptionBlock(2, 128),
+            InceptionBlock(128, 256),
+            InceptionBlock(256, 256),
         )
-        conv_out = 128 * Board.ROWS * Board.COLS
+        conv_out = 256 * Board.ROWS * Board.COLS
         self.head = nn.Sequential(
             nn.Linear(conv_out, 256),
             nn.ReLU(inplace=True),

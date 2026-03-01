@@ -403,7 +403,7 @@ def play_game(
                 for s, a, ns in reversed(traj):
                     G = terminal_reward + agent.gamma * G
                     terminal_reward = 0.0
-                    agent.push(s, a, float(G), ns, False)
+                    agent.push(s, a, float(G), ns, True)
 
             if winner == 1:
                 push_mc(p1_traj, win_reward)
