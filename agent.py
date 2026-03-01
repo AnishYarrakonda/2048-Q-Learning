@@ -134,7 +134,3 @@ class Agent:
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-
-            # 5. decay epsilon
-            if self.epsilon > self.epsilon_min:
-                self.epsilon *= self.epsilon_decay

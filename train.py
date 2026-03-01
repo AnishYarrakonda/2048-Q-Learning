@@ -682,6 +682,10 @@ def run_training(config: Config) -> None:
         else:
             draws += 1
 
+        # Decay epsilon once every 10 episodes (not every move).
+        if config["train"] and episode % 10 == 0 and agent.epsilon > agent.epsilon_min:
+            agent.epsilon = max(agent.epsilon_min, agent.epsilon * agent.epsilon_decay)
+
         checkpoint_note = ""
         if config["save_enabled"] and episode % config["save_interval"] == 0:
             saved_path = save_checkpoint(agent, config, episode)
