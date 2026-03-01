@@ -69,7 +69,7 @@ class Agent:
 
     def __init__(
         self: "Agent",
-        lr: float = 0.0003,
+        lr: float = 0.001,
         epsilon: float = 1.0,
         epsilon_decay: float = 0.997,
         epsilon_min: float = 0.05,
