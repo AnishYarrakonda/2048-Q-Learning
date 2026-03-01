@@ -1,5 +1,6 @@
 # imports
 import random
+from typing import Union
 from board import Board
 import torch
 import torch.nn as nn
@@ -12,7 +13,7 @@ device = torch.device("mps") if torch.backends.mps.is_available() else torch.dev
 class Agent:
     
     # initialize the agent
-    def __init__(self):
+    def __init__(self: "Agent") -> None:
         # neural network model
         self.model = nn.Sequential(
             nn.Flatten(),
@@ -35,7 +36,7 @@ class Agent:
 
 
     # predict the best move given the current board state
-    def predict(self, board: Board):
+    def predict(self: "Agent", board: Board) -> torch.Tensor:
         state = Board.board_to_tensor(board)
         with torch.no_grad():
             q_values = self.model(state)
@@ -43,7 +44,7 @@ class Agent:
     
 
     # epsilon-greedy action selection
-    def select_action(self, board: Board):
+    def select_action(self: "Agent", board: Board) -> int:
         # exploration
         if random.random() < self.epsilon:
             return random.randint(0, 6)
@@ -55,7 +56,14 @@ class Agent:
 
 
     # train on a single step using TD update
-    def train_step(self, state, action, reward, next_state, done):
+    def train_step(
+        self: "Agent",
+        state: torch.Tensor,
+        action: int,
+        reward: Union[float, torch.Tensor],
+        next_state: torch.Tensor,
+        done: bool,
+    ) -> None:
         # 1. predict Q-values for current state
         q_values = self.model(state)
 

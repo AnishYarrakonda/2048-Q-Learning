@@ -1,5 +1,6 @@
 # import torch for tensors
 import torch
+from typing import Optional
 
 # use gpu for faster operations
 device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
@@ -9,13 +10,13 @@ class Board:
 
     # convert board state to tensor for neural network input
     @staticmethod
-    def board_to_tensor(board):
+    def board_to_tensor(board: "Board") -> torch.Tensor:
         state = torch.stack([board.player1_bits, board.player2_bits])
         state = state.unsqueeze(0)
         return state.to(device)
 
     # create board
-    def __init__(self):
+    def __init__(self: "Board") -> None:
         # stores bit boards for each player
         self.player1_bits = torch.zeros((6, 7), dtype=torch.float32, device=device)
         self.player2_bits = torch.zeros((6, 7), dtype=torch.float32, device=device)
@@ -25,14 +26,14 @@ class Board:
 
 
     # reset the board to the initial state
-    def reset(self):
+    def reset(self: "Board") -> None:
         self.player1_bits.zero_()
         self.player2_bits.zero_()
         self.turn = 0
 
 
     # check horizontal 4 in a row
-    def check_hor(self, x, y):
+    def check_hor(self: "Board", x: int, y: int) -> bool:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         start = max(y - 3, 0)
@@ -48,7 +49,7 @@ class Board:
 
 
     # check vertical 4 in a row
-    def check_vert(self, x, y):
+    def check_vert(self: "Board", x: int, y: int) -> bool:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         start = max(x - 3, 0)
@@ -64,7 +65,7 @@ class Board:
 
 
     # check main diagonal (\) 4 in a row
-    def check_diag1(self, x, y):
+    def check_diag1(self: "Board", x: int, y: int) -> bool:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         i, j = x, y
@@ -88,7 +89,7 @@ class Board:
 
 
     # check other diagonal (/) 4 in a row
-    def check_diag2(self, x, y):
+    def check_diag2(self: "Board", x: int, y: int) -> bool:
         bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
 
         i, j = x, y
@@ -112,7 +113,7 @@ class Board:
 
 
     # full check for any winning 4 in a row
-    def full_check(self, x, y):
+    def full_check(self: "Board", x: int, y: int) -> bool:
         return (self.check_hor(x, y) or
                 self.check_vert(x, y) or
                 self.check_diag1(x, y) or
@@ -120,12 +121,12 @@ class Board:
     
 
     # checks if the board is full
-    def is_full(self):
+    def is_full(self: "Board") -> bool:
         return self.turn >= 42
 
 
     # drops a coin in the given column
-    def make_move(self, col):
+    def make_move(self: "Board", col: int) -> Optional[int]:
         taken = self.player1_bits[:, col] + self.player2_bits[:, col]
 
         if taken.all():
@@ -146,7 +147,7 @@ class Board:
     
 
     # prints the board state
-    def __str__(self):
+    def __str__(self: "Board") -> str:
         board_str = ""
         for i in range(5, -1, -1):
             for j in range(7):
@@ -161,7 +162,7 @@ class Board:
     
 
     # board representation for debugging
-    def __repr__(self):
+    def __repr__(self: "Board") -> str:
         return self.__str__()
     
 # simulate a game for testing
