@@ -1,0 +1,174 @@
+# import torch for tensors
+import torch
+
+# use gpu for faster operations
+device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+
+# board object
+class Board:
+
+    # create board
+    def __init__(self):
+        # stores bit boards for each player
+        self.player1_bits = torch.zeros((6, 7), dtype=torch.float32, device=device)
+        self.player2_bits = torch.zeros((6, 7), dtype=torch.float32, device=device)
+
+        # tracks the current game turn (0 for player 1, 1 for player 2)
+        self.turn = 0
+
+
+    # reset the board to the initial state
+    def reset(self):
+        self.player1_bits.zero_()
+        self.player2_bits.zero_()
+        self.turn = 0
+
+
+    # check horizontal 4 in a row
+    def check_hor(self, x, y):
+        bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
+
+        start = max(y - 3, 0)
+        end = min(y + 4, 7)
+
+        row_slice = bits[x, start:end]
+
+        for i in range(row_slice.size(0) - 3):
+            if row_slice[i:i+4].all():
+                return True
+
+        return False
+
+
+    # check vertical 4 in a row
+    def check_vert(self, x, y):
+        bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
+
+        start = max(x - 3, 0)
+        end = min(x + 4, 6)
+
+        col_slice = bits[start:end, y]
+
+        for i in range(col_slice.size(0) - 3):
+            if col_slice[i:i+4].all():
+                return True
+
+        return False
+
+
+    # check main diagonal (\) 4 in a row
+    def check_diag1(self, x, y):
+        bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
+
+        i, j = x, y
+        while i > 0 and j > 0:
+            i -= 1
+            j -= 1
+
+        diag_slice = []
+        while i < 6 and j < 7:
+            diag_slice.append(bits[i, j])
+            i += 1
+            j += 1
+
+        diag_slice = torch.stack(diag_slice)
+
+        for k in range(diag_slice.size(0) - 3):
+            if diag_slice[k:k+4].all():
+                return True
+
+        return False
+
+
+    # check other diagonal (/) 4 in a row
+    def check_diag2(self, x, y):
+        bits = self.player1_bits if self.turn % 2 == 1 else self.player2_bits
+
+        i, j = x, y
+        while i < 5 and j > 0:
+            i += 1
+            j -= 1
+
+        diag_slice = []
+        while i >= 0 and j < 7:
+            diag_slice.append(bits[i, j])
+            i -= 1
+            j += 1
+
+        diag_slice = torch.stack(diag_slice)
+
+        for k in range(diag_slice.size(0) - 3):
+            if diag_slice[k:k+4].all():
+                return True
+
+        return False
+
+
+    # full check for any winning 4 in a row
+    def full_check(self, x, y):
+        return (self.check_hor(x, y) or
+                self.check_vert(x, y) or
+                self.check_diag1(x, y) or
+                self.check_diag2(x, y))
+    
+
+    # checks if the board is full
+    def is_full(self):
+        return self.turn >= 42
+
+
+    # drops a coin in the given column
+    def make_move(self, col):
+        taken = self.player1_bits[:, col] + self.player2_bits[:, col]
+
+        if taken.all():
+            return None  # Column full
+
+        for i in range(6):
+            if not taken[i]:
+                if self.turn % 2 == 0:
+                    self.player1_bits[i, col] = 1
+                else:
+                    self.player2_bits[i, col] = 1
+
+                self.turn += 1
+                return i  # Return the row where the coin landed
+
+        return None
+    
+
+    # prints the board state
+    def __str__(self):
+        board_str = ""
+        for i in range(5, -1, -1):
+            for j in range(7):
+                if self.player1_bits[i, j] == 1:
+                    board_str += "X "
+                elif self.player2_bits[i, j] == 1:
+                    board_str += "O "
+                else:
+                    board_str += ". "
+            board_str += "\n"
+        return board_str
+    
+
+    # board representation for debugging
+    def __repr__(self):
+        return self.__str__()
+    
+# simulate a game for testing
+if __name__ == "__main__":
+    import time
+
+    board = Board()
+    print(board)
+    moves = [1, 2, 1, 2, 1, 2, 1]
+    for move in moves:
+        time.sleep(0.2)
+        row = board.make_move(move)
+        print(board)
+        if row is not None and board.full_check(row, move):
+            # Determine which player just played
+            winner = 2 if board.turn % 2 == 0 else 1
+            print(f"Player {winner} wins!")
+            break
