@@ -80,17 +80,18 @@ class Board:
         return False, 0, []
 
     def to_tensor(self, device: torch.device) -> torch.Tensor:
-        state = torch.zeros((1, 3, self.ROWS, self.COLS), dtype=torch.float32, device=device)
+        state = torch.zeros((1, 2, self.ROWS, self.COLS), dtype=torch.float32, device=device)
         for r in range(self.ROWS):
             for c in range(self.COLS):
                 if self.grid[r][c] == 1:
                     state[0, 0, r, c] = 1.0
                 elif self.grid[r][c] == 2:
                     state[0, 1, r, c] = 1.0
+        flat_state = state.flatten()
         # 1.0 when it's player 1 to move next, 0.0 when it's player 2.
         turn_value = 1.0 if self.turn % 2 == 0 else 0.0
-        state[0, 2, :, :] = turn_value
-        return state
+        turn_tensor = torch.tensor([turn_value], dtype=torch.float32, device=device)
+        return torch.cat([flat_state, turn_tensor]).unsqueeze(0)
 
 
 class Agent:

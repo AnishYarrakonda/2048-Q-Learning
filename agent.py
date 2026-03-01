@@ -23,9 +23,9 @@ class Agent:
         self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
         # stores all of the layers to be unpacked into the model
-        modules: list[nn.Module] = [nn.Flatten()]
+        modules: list[nn.Module] = []
 
-        input_size = 3 * 6 * 7  # input dimension (P1 bits, P2 bits, turn plane)
+        input_size = 2 * 6 * 7 + 1  # input dimension (flattened board + scalar turn value)
 
         # add hidden layers dynamically
         for hidden_size in layers:

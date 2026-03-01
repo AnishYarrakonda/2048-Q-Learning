@@ -14,9 +14,9 @@ class Board:
     @staticmethod
     def board_to_tensor(board: "Board") -> torch.Tensor:
         turn_plane_value = 1.0 if board.turn % 2 == 0 else 0.0
-        turn_plane = torch.full((ROWS, COLS), turn_plane_value, dtype=torch.float32, device=device)
-        state = torch.stack([board.player1_bits, board.player2_bits, turn_plane])
-        state = state.unsqueeze(0)
+        board_state = torch.stack([board.player1_bits, board.player2_bits]).flatten()
+        turn_tensor = torch.tensor([turn_plane_value], dtype=torch.float32, device=device)
+        state = torch.cat([board_state, turn_tensor]).unsqueeze(0)
         return state.to(device)
 
     # create board

@@ -24,6 +24,8 @@ class Config(TypedDict):
     watch_steps: int
     watch_delay: float
     progress_interval: int
+    win_reward: float
+    loss_reward: float
     save_enabled: bool
     save_interval: int
     run_name: str
@@ -45,6 +47,8 @@ DEFAULT_CONFIG: Config = {
     "watch_steps": 100,
     "watch_delay": 0.2,
     "progress_interval": 25,
+    "win_reward": 1.0,
+    "loss_reward": -1.0,
     "save_enabled": True,
     "save_interval": 500,
     "run_name": "agent",
@@ -168,6 +172,8 @@ def configure_training(config: Config) -> None:
     config["progress_interval"] = ask_int(
         "Print progress every N episodes", config["progress_interval"], minimum=1
     )
+    config["win_reward"] = ask_float("Reward for win", config["win_reward"])
+    config["loss_reward"] = ask_float("Reward for loss", config["loss_reward"])
 
 
 def configure_visuals(config: Config) -> None:
@@ -281,6 +287,8 @@ def play_game(
     watch_game: bool = False,
     watch_steps: int = 1,
     watch_delay: float = 0.2,
+    win_reward: float = 1.0,
+    loss_reward: float = -1.0,
 ) -> tuple[int, int]:
     board = Board()
     done = False
@@ -302,7 +310,7 @@ def play_game(
             winner = 2 if acting_player == 1 else 1
             if train:
                 next_state = Board.board_to_tensor(board=board)
-                agent.train_step(state, action, -1.0, next_state, done)
+                agent.train_step(state, action, loss_reward, next_state, done)
             break
 
         done, winner = board.game_over(row, action)
@@ -315,9 +323,9 @@ def play_game(
         if train:
             reward = 0.0
             if done and winner == acting_player:
-                reward = 1.0
+                reward = win_reward
             elif done and winner != 0:
-                reward = -1.0
+                reward = loss_reward
             next_state = Board.board_to_tensor(board=board)
             agent.train_step(state, action, reward, next_state, done)
 
@@ -488,6 +496,8 @@ def run_training(config: Config) -> None:
             watch_game=config["watch_game"],
             watch_steps=config["watch_steps"],
             watch_delay=config["watch_delay"],
+            win_reward=config["win_reward"],
+            loss_reward=config["loss_reward"],
         )
         winners.append(winner)
         game_lengths.append(game_length)
