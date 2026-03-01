@@ -1,19 +1,14 @@
 """
-train.py — curriculum DQN vs Minimax opponent.
+train.py — curriculum DQN vs Minimax opponent with reward shaping.
 
-Training:  every episode starts from a random mid-game position (4-8 moves
-           already played) so the agent sees meaningful board states even
-           during early high-epsilon exploration.
-
-Promotion: every EVAL_INTERVAL episodes, play EVAL_GAMES fully greedy (ε=0)
-           games from random positions. Need EVAL_WIN_THRESHOLD wins to
-           advance to the next minimax depth. No rolling-window noise.
-
-Speed fixes:
-  - BUFFER_CAPACITY reduced to 20k (avoids MPS memory pressure spike)
-  - Training games use FastBoard throughout; only one Board.board_to_tensor
-    call per agent move (unavoidable for inference)
-  - Eval runs entirely on FastBoard — zero tensor ops on opponent side
+Key changes vs previous version:
+  - Reward shaping: agent gets intermediate signal every move, not just
+    win/loss at the end. Shaped rewards teach it WHAT to do, not just
+    whether it eventually won.
+  - Training starts from empty board (no random offset) so agent learns
+    full game from the start, including openings.
+  - Eval still uses random start positions for diversity.
+  - Curriculum stays: depth 0 (random) → depth 1 → ... → depth 6
 """
 
 import os
@@ -25,7 +20,7 @@ import torch
 
 from board import Board
 from agent import DQNAgent
-from minimax import MinimaxOpponent, FastBoard, ROWS, COLS, SIZE
+from minimax import MinimaxOpponent, FastBoard, ROWS, COLS, SIZE, _WIN_LINES, _CELL_WIN_LINES
 
 # ---------------------------------------------------------------------------
 # Config
@@ -33,39 +28,40 @@ from minimax import MinimaxOpponent, FastBoard, ROWS, COLS, SIZE
 
 SAVE_DIR        = "models"
 RUN_NAME        = "cf_dqn"
-NUM_EPISODES    = 50_000
+NUM_EPISODES    = 100_000
 SAVE_INTERVAL   = 5_000
-WINDOW          = 250          # print stats every N training episodes
+WINDOW          = 250
 
-# Curriculum — stage 0 = random opponent, stage 1 = depth 1 minimax, etc.
-MAX_DEPTH       = 6            # final stage plays depth-6 minimax
-# current_depth=0 means pure random, current_depth=N means minimax depth N
+MAX_DEPTH       = 6   # depth 0=random, 1-6=minimax
 
-# Training random starts
-TRAIN_RAND_MIN  = 4
-TRAIN_RAND_MAX  = 8
-
-# Promotion eval
+# Eval
 EVAL_INTERVAL       = 1_000
 EVAL_GAMES          = 100
-EVAL_WIN_THRESHOLD  = 60       # 60/100 = 60%
-EVAL_RAND_MIN       = 4
-EVAL_RAND_MAX       = 20
+EVAL_WIN_THRESHOLD  = 60
+EVAL_RAND_MIN       = 0    # eval from empty board — matches training distribution
+EVAL_RAND_MAX       = 8
 
-# DQN hyper-params
-LR              = 2e-3
+# DQN
+LR              = 1e-3
 GAMMA           = 0.99
 BATCH_SIZE      = 64
-BUFFER_CAPACITY = 20_000       # reduced from 60k — avoids MPS memory pressure
-TARGET_UPDATE   = 500
+BUFFER_CAPACITY = 30_000
+TARGET_UPDATE   = 200
 EPS_START       = 1.0
 EPS_END         = 0.05
-EPS_DECAY       = 12_000
+EPS_DECAY       = 5_000    # was 15_000 — reach near-greedy by ep ~15k
 
-# Rewards
+# Terminal rewards
 WIN_REWARD  =  1.0
 LOSS_REWARD = -1.0
-DRAW_REWARD =  0.2
+DRAW_REWARD =  0.3
+
+# Shaped intermediate rewards — teach strategy every move
+THREAT_4_REWARD     =  0.6   # agent creates a 3-in-a-row with open end (one move from win)
+OPP_THREAT_4_REWARD = -0.6   # agent lets opponent create same
+THREAT_3_REWARD     =  0.15  # agent creates a 2-in-a-row with open ends
+OPP_THREAT_3_REWARD = -0.15  # opponent creates same
+CENTER_REWARD       =  0.03  # agent plays in centre column (col 3)
 
 RESUME_PATH = ""
 
@@ -81,11 +77,49 @@ class ANSI:
 
 
 # ---------------------------------------------------------------------------
+# Reward shaping helpers — all on FastBoard, pure Python
+# ---------------------------------------------------------------------------
+
+def _count_threats(cells: bytearray, player: int, n: int) -> int:
+    """
+    Count win lines with exactly n pieces of `player` and 0 opponent pieces.
+    n=3 → threat-4 (one move from winning)
+    n=2 → threat-3 (two moves from winning)
+    """
+    opp   = 3 - player
+    count = 0
+    for a, b, c, d in _WIN_LINES:
+        ca, cb, cc, cd = cells[a], cells[b], cells[c], cells[d]
+        if ca == opp or cb == opp or cc == opp or cd == opp:
+            continue
+        if (ca == player) + (cb == player) + (cc == player) + (cd == player) == n:
+            count += 1
+    return count
+
+
+def _shaped_reward(cells_before: bytearray, cells_after: bytearray,
+                   agent: int, col: int) -> float:
+    """Intermediate reward based on how the move changed the threat landscape."""
+    opp = 3 - agent
+
+    new_agent_4 = _count_threats(cells_after, agent, 3) - _count_threats(cells_before, agent, 3)
+    new_agent_3 = _count_threats(cells_after, agent, 2) - _count_threats(cells_before, agent, 2)
+    new_opp_4   = max(0, _count_threats(cells_after, opp, 3) - _count_threats(cells_before, opp, 3))
+    new_opp_3   = max(0, _count_threats(cells_after, opp, 2) - _count_threats(cells_before, opp, 2))
+
+    r  = new_agent_4 * THREAT_4_REWARD
+    r += new_agent_3 * THREAT_3_REWARD
+    r -= new_opp_4   * abs(OPP_THREAT_4_REWARD)
+    r -= new_opp_3   * abs(OPP_THREAT_3_REWARD)
+    r += CENTER_REWARD if col == 3 else 0.0
+    return float(r)
+
+
+# ---------------------------------------------------------------------------
 # FastBoard helpers
 # ---------------------------------------------------------------------------
 
 def _random_fastboard(min_moves: int, max_moves: int) -> "FastBoard":
-    """Non-terminal FastBoard with min_moves..max_moves already played."""
     while True:
         fb = FastBoard()
         n  = random.randint(min_moves, max_moves)
@@ -104,8 +138,7 @@ def _random_fastboard(min_moves: int, max_moves: int) -> "FastBoard":
             return fb
 
 
-def _fb_to_board(fb: FastBoard) -> Board:
-    """FastBoard → tensor Board for agent inference only."""
+def _fb_to_board(fb: "FastBoard") -> Board:
     board = Board()
     cells = fb.cells
     for r in range(ROWS):
@@ -120,15 +153,15 @@ def _fb_to_board(fb: FastBoard) -> Board:
 
 
 # ---------------------------------------------------------------------------
-# Training episode
+# Training episode — full games from empty board, shaped rewards
 # ---------------------------------------------------------------------------
 
-def play_episode(agent: DQNAgent, opponent: MinimaxOpponent, agent_is_p1: bool) -> tuple[int, int]:
-    fb           = _random_fastboard(TRAIN_RAND_MIN, TRAIN_RAND_MAX)
+def play_episode(agent: DQNAgent, opponent: MinimaxOpponent,
+                 agent_is_p1: bool) -> tuple[int, int]:
+    fb           = FastBoard()          # always start from empty board
     agent_player = 1 if agent_is_p1 else 2
     opp_player   = 3 - agent_player
     trajectory   = []
-    start_turn   = fb.turn
 
     while True:
         valid = [c for c in range(COLS) if fb.heights[c] < ROWS]
@@ -142,6 +175,7 @@ def play_episode(agent: DQNAgent, opponent: MinimaxOpponent, agent_is_p1: bool) 
             board  = _fb_to_board(fb)
             state  = Board.board_to_tensor(board)
             action = agent.select_action(board)
+            cells_before = bytearray(fb.cells)   # snapshot for shaping
         else:
             action = opponent.select_action_fast(fb)
 
@@ -168,9 +202,11 @@ def play_episode(agent: DQNAgent, opponent: MinimaxOpponent, agent_is_p1: bool) 
             break
 
         if current == agent_player:
+            # Shaped intermediate reward
+            reward = _shaped_reward(cells_before, fb.cells, agent_player, action) # type: ignore
             ns = Board.board_to_tensor(_fb_to_board(fb))
-            trajectory.append((state, action, 0.0, ns, False)) # type: ignore
-
+            trajectory.append((state, action, reward, ns, False)) # type: ignore
+    # Back-fill terminal loss reward
     if trajectory and winner == opp_player:
         s, a, _, ns, d = trajectory[-1]
         trajectory[-1] = (s, a, LOSS_REWARD, ns, True)
@@ -179,17 +215,25 @@ def play_episode(agent: DQNAgent, opponent: MinimaxOpponent, agent_is_p1: bool) 
         agent.buffer.push(*t)
     agent.learn()
 
-    return winner, fb.turn - start_turn
+    return winner, fb.turn
 
 
 # ---------------------------------------------------------------------------
-# Promotion eval — greedy, wider random starts, no learning
+# Promotion eval — greedy, random starts, no learning
 # ---------------------------------------------------------------------------
 
 def run_eval(agent: DQNAgent, opponent: MinimaxOpponent) -> tuple[int, int, int]:
+    """
+    Greedy (ε=0) games. Half start from empty board, half from 2-8 move
+    random positions — same distribution the agent trained on.
+    """
     wins = draws = losses = 0
     for i in range(EVAL_GAMES):
-        fb           = _random_fastboard(EVAL_RAND_MIN, EVAL_RAND_MAX)
+        # Match training distribution: empty board or short random start
+        if i % 2 == 0:
+            fb = FastBoard()
+        else:
+            fb = _random_fastboard(2, 8)
         agent_player = 1 if (i % 2 == 0) else 2
 
         while True:
@@ -239,12 +283,10 @@ def save_checkpoint(agent: DQNAgent, episode: int, depth: int) -> str:
 
 def run_training() -> None:
     print(f"Curriculum DQN — {NUM_EPISODES} episodes | depth 0 (random) → {MAX_DEPTH} (minimax)")
-    print(f"Train starts: random {TRAIN_RAND_MIN}–{TRAIN_RAND_MAX} moves in")
-    print(f"Promotion: every {EVAL_INTERVAL} eps | "
-          f"{EVAL_WIN_THRESHOLD}/{EVAL_GAMES} greedy wins from "
-          f"random {EVAL_RAND_MIN}–{EVAL_RAND_MAX}-move positions\n")
+    print(f"Reward shaping: ON  (threat-4: ±{THREAT_4_REWARD}, threat-3: ±{THREAT_3_REWARD}, centre: +{CENTER_REWARD})")
+    print(f"Promotion: every {EVAL_INTERVAL} eps | {EVAL_WIN_THRESHOLD}/{EVAL_GAMES} greedy wins\n")
 
-    current_depth = 0                              # start vs pure random
+    current_depth = 0
     opponent      = MinimaxOpponent(depth=current_depth)
 
     agent = DQNAgent(
@@ -273,17 +315,17 @@ def run_training() -> None:
         else:              w_losses += 1
 
         if ep % WINDOW == 0:
-            total   = w_wins + w_losses + w_draws or 1
-            avg_len = statistics.mean(game_lengths[-WINDOW:])
-            wr      = w_wins / total
-            depth_label = "random" if current_depth == 0 else str(current_depth)
+            total      = w_wins + w_losses + w_draws or 1
+            avg_len    = statistics.mean(game_lengths[-WINDOW:])
+            wr         = w_wins / total
+            depth_lbl  = "rng" if current_depth == 0 else str(current_depth)
             print(
-                f"Ep {ep:>6} | Opp {ANSI.CYAN}{depth_label:>6}{ANSI.RESET} | "
+                f"Ep {ep:>6} | Opp {ANSI.CYAN}{depth_lbl:>3}{ANSI.RESET} | "
                 f"W {ANSI.GREEN}{w_wins:>3}{ANSI.RESET} "
                 f"L {ANSI.RED}{w_losses:>3}{ANSI.RESET} "
                 f"D {ANSI.CYAN}{w_draws:>2}{ANSI.RESET} "
                 f"/{WINDOW} "
-                f"({ANSI.YELLOW}{wr:.1%} ε-train{ANSI.RESET}) | "
+                f"({ANSI.GREEN if wr >= 0.5 else ANSI.YELLOW}{wr:.1%}{ANSI.RESET}) | "
                 f"AvgLen {avg_len:>4.1f} | "
                 f"ε {ANSI.MAGENTA}{agent.epsilon:.3f}{ANSI.RESET} | "
                 f"{time.perf_counter()-t0:>6.1f}s"
@@ -296,12 +338,13 @@ def run_training() -> None:
             tag = (f"{ANSI.GREEN}✓ PROMOTE → depth {current_depth+1}{ANSI.RESET}"
                    if promoted else
                    f"{ANSI.RED}not yet ({ew}/{EVAL_WIN_THRESHOLD}){ANSI.RESET}")
+            depth_lbl = "random" if current_depth == 0 else str(current_depth)
             print(
-                f"  EVAL depth {ANSI.CYAN}{current_depth}{ANSI.RESET} | "
+                f"  EVAL opp={depth_lbl} | "
                 f"W {ANSI.GREEN}{ew}{ANSI.RESET} "
                 f"D {ANSI.CYAN}{ed}{ANSI.RESET} "
                 f"L {ANSI.RED}{el}{ANSI.RESET} "
-                f"/{EVAL_GAMES} greedy → {tag}"
+                f"→ {tag}"
             )
             if promoted:
                 save_checkpoint(agent, ep, current_depth)
