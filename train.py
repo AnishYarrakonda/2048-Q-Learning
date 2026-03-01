@@ -7,7 +7,7 @@ from typing import TypedDict
 
 import torch
 
-from agent import Agent, ConnectFourCNN
+from agent import Agent
 from board import Board
 
 
@@ -26,6 +26,7 @@ class Config(TypedDict):
     loss_reward: float
     run_name: str
     save_dir: str
+    save_interval: int
     resume_training: bool
     resume_model_path: str
 
@@ -45,6 +46,7 @@ DEFAULT_CONFIG: Config = {
     "loss_reward": -2.0,
     "run_name": "agent",
     "save_dir": "models",
+    "save_interval": 1000,
     "resume_training": False,
     "resume_model_path": "",
 }
@@ -243,6 +245,7 @@ def configure_saving(config: Config) -> None:
         return
     config["run_name"] = ask_text("Run/model name (used in checkpoint filenames)", config["run_name"])
     config["save_dir"] = ask_text("Directory for checkpoints and model files", config["save_dir"])
+    config["save_interval"] = ask_int("Save checkpoint every N episodes", config["save_interval"], minimum=1)
 
 
 def build_runtime_config() -> Config:
@@ -288,7 +291,6 @@ def format_progress_line(
     train_enabled: bool,
     block_seconds: float,
     total_seconds: float,
-    eval_summary: str = "",
     checkpoint_note: str = "",
 ) -> str:
     def centered(label: str, value_text: str, width: int, colored_value: str) -> str:
@@ -313,8 +315,6 @@ def format_progress_line(
             f"{ANSI.GREEN if train_enabled else ANSI.RED}{train_enabled}{ANSI.RESET}",
         ),
     ]
-    if eval_summary:
-        segments.append(f" {eval_summary} ")
     if checkpoint_note:
         segments.append(f" {checkpoint_note} ")
     return " | ".join(segments)
@@ -400,89 +400,6 @@ def play_game(
     return winner, board.turn
 
 
-def clone_state_dict_cpu(model: torch.nn.Module) -> dict[str, torch.Tensor]:
-    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-
-
-def select_greedy_action(
-    model: torch.nn.Module,
-    board: Board,
-    device: torch.device,
-    valid_moves: list[int],
-) -> int:
-    state = Board.board_to_tensor(board).to(device)
-    with torch.no_grad():
-        q_values = model(state)[0]
-    masked = q_values.clone()
-    for col in range(Board.COLS):
-        if col not in valid_moves:
-            masked[col] = -float("inf")
-    return int(torch.argmax(masked).item())
-
-
-def evaluate_vs_snapshot(
-    agent: Agent,
-    snapshot_state_dict: dict[str, torch.Tensor],
-    num_games: int = 100,
-    viewer: TrainingTkViewer | None = None,
-) -> tuple[int, int, int, int, int]:
-    snapshot_model = ConnectFourCNN().to(agent.device)
-    snapshot_model.load_state_dict(snapshot_state_dict)
-    snapshot_model.eval()
-    agent.model.eval()
-
-    wins = 0
-    wins_as_p1 = 0
-    wins_as_p2 = 0
-    losses = 0
-    draws = 0
-    half = num_games // 2
-    for game_idx in range(num_games):
-        if viewer is not None and game_idx % 5 == 0:
-            viewer.heartbeat()
-        board = Board()
-        done = False
-        winner = 0
-        current_is_player1 = game_idx < half
-
-        while not done:
-            valid_moves = board.valid_moves()
-            if not valid_moves:
-                break
-
-            is_player1_turn = board.turn % 2 == 0
-            current_turn = (is_player1_turn and current_is_player1) or (not is_player1_turn and not current_is_player1)
-
-            if current_turn:
-                action = select_greedy_action(agent.model, board, agent.device, valid_moves)
-            else:
-                action = select_greedy_action(snapshot_model, board, agent.device, valid_moves)
-
-            row = board.make_move(action)
-            if row is None:
-                break
-            done, winner = board.game_over(row, action)
-
-        if current_is_player1:
-            if winner == 1:
-                wins += 1
-                wins_as_p1 += 1
-            elif winner == 2:
-                losses += 1
-            else:
-                draws += 1
-        else:
-            if winner == 2:
-                wins += 1
-                wins_as_p2 += 1
-            elif winner == 1:
-                losses += 1
-            else:
-                draws += 1
-
-    return wins, wins_as_p1, wins_as_p2, losses, draws
-
-
 def checkpoint_path(config: Config, episode: int) -> str:
     return os.path.join(config["save_dir"], f"{config['run_name']}_checkpoint_{episode}.pt")
 
@@ -496,9 +413,7 @@ def save_checkpoint(agent: Agent, config: Config, episode: int) -> str:
 
 def run_training(config: Config) -> None:
     REPORT_INTERVAL = 50
-    EVAL_GAMES = 100
-    SNAPSHOT_INTERVAL = 1000
-    CHECKPOINT_INTERVAL = 1000
+    CHECKPOINT_INTERVAL = config["save_interval"]
 
     if config["resume_training"]:
         if not config["resume_model_path"]:
@@ -521,9 +436,6 @@ def run_training(config: Config) -> None:
     # Always save the original model at episode 0.
     initial_path = save_checkpoint(agent, config, 0)
     print(f"Saved checkpoint: {initial_path}")
-
-    # Save the original snapshot (episode 0) for long-horizon self-play eval.
-    frozen_snapshots: dict[int, dict[str, torch.Tensor]] = {0: clone_state_dict_cpu(agent.model)}
 
     p1_wins = 0
     p2_wins = 0
@@ -581,9 +493,6 @@ def run_training(config: Config) -> None:
         if config["train"] and episode % 10 == 0 and agent.epsilon > agent.epsilon_min:
             agent.epsilon = max(agent.epsilon_min, agent.epsilon * agent.epsilon_decay)
 
-        if episode % SNAPSHOT_INTERVAL == 0:
-            frozen_snapshots[episode] = clone_state_dict_cpu(agent.model)
-
         checkpoint_note = ""
         if episode % CHECKPOINT_INTERVAL == 0:
             saved_path = save_checkpoint(agent, config, episode)
@@ -595,25 +504,6 @@ def run_training(config: Config) -> None:
         now = time.perf_counter()
         block_seconds = now - block_start
         total_seconds = now - total_start
-        eval_summary = ""
-        if episode % SNAPSHOT_INTERVAL == 0:
-            snapshot_episode = episode - SNAPSHOT_INTERVAL
-            eval_wins, eval_wins_as_p1, eval_wins_as_p2, eval_losses, eval_draws = evaluate_vs_snapshot(
-                agent=agent,
-                snapshot_state_dict=frozen_snapshots[snapshot_episode],
-                num_games=EVAL_GAMES,
-                viewer=viewer,
-            )
-            eval_summary = (
-                f"Self-Play vs Ep{snapshot_episode}: {eval_wins}/{EVAL_GAMES} "
-                f"(W/L/D {eval_wins}/{eval_losses}/{eval_draws}; "
-                f"P1 {eval_wins_as_p1}/50, P2 {eval_wins_as_p2}/50)"
-            )
-            print(
-                f"Self-play evaluation at episode {episode}: won {eval_wins}/{EVAL_GAMES} "
-                f"vs episode {snapshot_episode} | W/L/D: {eval_wins}/{eval_losses}/{eval_draws} "
-                f"(as P1: {eval_wins_as_p1}/50, as P2: {eval_wins_as_p2}/50)"
-            )
 
         if episode % REPORT_INTERVAL == 0:
             print(
@@ -629,7 +519,6 @@ def run_training(config: Config) -> None:
                     train_enabled=config["train"],
                     block_seconds=block_seconds,
                     total_seconds=total_seconds,
-                    eval_summary=eval_summary,
                     checkpoint_note=checkpoint_note,
                 )
             )
