@@ -1,204 +1,268 @@
-# imports
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import numpy as np
 import random
 from collections import deque
 from typing import Optional
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from board import Board, device
 
-from board import Board
+# ---------------------------------------------------------------------------
+# Neural Network
+# ---------------------------------------------------------------------------
+# Input:  1 x 2 x 6 x 7  (batch x channels x rows x cols)
+#         channel 0 = current player's pieces
+#         channel 1 = opponent's pieces
+#
+# Architecture:
+#   3x Conv layers (128 filters, 4x4 kernel, padding=1) with BatchNorm + ReLU
+#   Flatten → FC 512 → FC 256 → FC 7  (one logit per column)
+#
+# After each conv the spatial size shrinks:
+#   6x7  →  5x6  →  4x5  →  3x4   (128 channels throughout)
+#   Flattened: 128 * 3 * 4 = 1536
+# ---------------------------------------------------------------------------
 
-
-class InceptionBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int) -> None:
+class ConnectFourNet(nn.Module):
+    def __init__(self):
         super().__init__()
-        assert out_channels % 4 == 0
-        branch = out_channels // 4
-        self.branch1x1 = nn.Conv2d(in_channels, branch, kernel_size=1, padding=0)
-        # Use 'same' padding per-dimension to keep spatial dims consistent
-        self.branch1x4 = nn.Conv2d(in_channels, branch, kernel_size=(1, 4), padding=(0, 1))
-        self.branch4x1 = nn.Conv2d(in_channels, branch, kernel_size=(4, 1), padding=(1, 0))
-        self.branch3x3 = nn.Conv2d(in_channels, branch, kernel_size=3, padding=1)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
+
+        # --- convolutional backbone ---
+        self.conv1 = nn.Conv2d(2,   128, kernel_size=4, padding=1)
+        self.bn1   = nn.BatchNorm2d(128)
+
+        self.conv2 = nn.Conv2d(128, 128, kernel_size=4, padding=1)
+        self.bn2   = nn.BatchNorm2d(128)
+
+        self.conv3 = nn.Conv2d(128, 128, kernel_size=4, padding=1)
+        self.bn3   = nn.BatchNorm2d(128)
+
+        # --- fully-connected head ---
+        # 128 channels * 3 rows * 4 cols = 1536 after 3 conv layers
+        self._flat_size = 128 * 3 * 4
+
+        self.fc1 = nn.Linear(self._flat_size, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, Board.COLS)   # 7 output logits
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b1 = self.branch1x1(x)
-        b2 = self.branch1x4(x)
-        b3 = self.branch4x1(x)
-        b4 = self.branch3x3(x)
-        # Ensure spatial dims match by center-padding each branch to the largest H and W across branches
-        import torch.nn.functional as F
+        """
+        x: (batch, 2, 6, 7)  — already on the correct device
+        returns: (batch, 7) raw logits
+        """
+        x = F.relu(self.bn1(self.conv1(x)))   # → (b, 128, 5, 6)
+        x = F.relu(self.bn2(self.conv2(x)))   # → (b, 128, 4, 5)
+        x = F.relu(self.bn3(self.conv3(x)))   # → (b, 128, 3, 4)
 
-        hs = [t.size(2) for t in (b1, b2, b3, b4)]
-        ws = [t.size(3) for t in (b1, b2, b3, b4)]
-        target_h = max(hs)
-        target_w = max(ws)
+        x = x.flatten(start_dim=1)            # → (b, 1536)
 
-        def center_pad(t: torch.Tensor, th: int, tw: int) -> torch.Tensor:
-            h, w = t.size(2), t.size(3)
-            pad_h = th - h
-            pad_w = tw - w
-            pad_top = pad_h // 2
-            pad_bottom = pad_h - pad_top
-            pad_left = pad_w // 2
-            pad_right = pad_w - pad_left
-            # F.pad uses (left, right, top, bottom)
-            return F.pad(t, (pad_left, pad_right, pad_top, pad_bottom))
+        x = F.relu(self.fc1(x))               # → (b, 512)
+        x = F.relu(self.fc2(x))               # → (b, 256)
+        x = self.fc3(x)                       # → (b, 7)
+        return x
 
-        b1p = center_pad(b1, target_h, target_w) if (b1.size(2) != target_h or b1.size(3) != target_w) else b1
-        b2p = center_pad(b2, target_h, target_w) if (b2.size(2) != target_h or b2.size(3) != target_w) else b2
-        b3p = center_pad(b3, target_h, target_w) if (b3.size(2) != target_h or b3.size(3) != target_w) else b3
-        b4p = center_pad(b4, target_h, target_w) if (b4.size(2) != target_h or b4.size(3) != target_w) else b4
+    def policy(self, board: Board) -> torch.Tensor:
+        """
+        Convenience: given a Board, return a masked softmax probability
+        distribution over valid columns only (invalid cols → 0).
+        Returns a (7,) tensor on `device`.
+        """
+        self.eval()
+        with torch.no_grad():
+            # board_to_tensor already reshapes to (1, 2*6*7) — reshape to (1,2,6,7)
+            state = Board.board_to_tensor(board).view(1, 2, Board.ROWS, Board.COLS)
+            logits = self(state).squeeze(0)  # (7,)
 
-        out = torch.cat([b1p, b2p, b3p, b4p], dim=1)
-        return self.relu(self.bn(out))
+            # mask illegal moves
+            mask = torch.full((Board.COLS,), float('-inf'), device=device)
+            for col in board.valid_moves():
+                mask[col] = 0.0
+
+            probs = F.softmax(logits + mask, dim=0)
+        return probs
+
+    def best_move(self, board: Board) -> int:
+        """Return the column with the highest probability."""
+        probs = self.policy(board)
+        return int(probs.argmax().item())
+
+    def sample_move(self, board: Board, temperature: float = 1.0) -> int:
+        """Sample a move proportional to policy probabilities."""
+        probs = self.policy(board)
+        if temperature != 1.0:
+            probs = probs ** (1.0 / temperature)
+            probs = probs / probs.sum()
+        return int(torch.multinomial(probs, 1).item())
 
 
-class ConnectFourCNN(nn.Module):
-    """CNN Q-network consuming flattened, perspective-aligned 2*6*7 input."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.conv = nn.Sequential(
-            InceptionBlock(2, 128),
-            InceptionBlock(128, 256),
-            InceptionBlock(256, 256),
-        )
-        conv_out = 256 * Board.ROWS * Board.COLS
-        self.head = nn.Sequential(
-            nn.Linear(conv_out, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(256, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, Board.COLS),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        spatial = x.view(-1, 2, Board.ROWS, Board.COLS)
-        features = self.conv(spatial).flatten(1)
-        return self.head(features)
-
+# ---------------------------------------------------------------------------
+# Replay Buffer
+# ---------------------------------------------------------------------------
 
 class ReplayBuffer:
-    def __init__(self, capacity: int) -> None:
-        self.buffer: deque[tuple[torch.Tensor, int, float, torch.Tensor, bool]] = deque(maxlen=capacity)
+    """Stores (state_tensor, action, reward, next_state_tensor, done) tuples."""
 
-    def push(
-        self,
-        state: torch.Tensor,
-        action: int,
-        reward: float,
-        next_state: torch.Tensor,
-        done: bool,
-    ) -> None:
+    def __init__(self, capacity: int = 50_000):
+        self.buffer: deque = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
         self.buffer.append((state, action, reward, next_state, done))
 
-    def sample(self, batch_size: int) -> list[tuple[torch.Tensor, int, float, torch.Tensor, bool]]:
-        return random.sample(self.buffer, batch_size)
+    def sample(self, batch_size: int):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return (
+            torch.cat(states).to(device),
+            torch.tensor(actions, dtype=torch.long, device=device),
+            torch.tensor(rewards, dtype=torch.float32, device=device),
+            torch.cat(next_states).to(device),
+            torch.tensor(dones,   dtype=torch.float32, device=device),
+        )
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.buffer)
 
 
-class Agent:
-    BATCH_SIZE = 256
-    MIN_BUFFER = 1000
-    TARGET_UPDATE_FREQ = 500
+# ---------------------------------------------------------------------------
+# DQN Agent  (wraps the network + replay buffer + optimizer)
+# ---------------------------------------------------------------------------
 
+class DQNAgent:
     def __init__(
-        self: "Agent",
-        lr: float = 0.001,
-        epsilon: float = 1.0,
-        epsilon_decay: float = 0.997,
-        epsilon_min: float = 0.05,
-        gamma: float = 0.97,
-    ) -> None:
-        self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
-        self.model: nn.Module = ConnectFourCNN().to(self.device)
-        self.target_model: nn.Module = ConnectFourCNN().to(self.device)
-        self.target_model.load_state_dict(self.model.state_dict())
-        self.target_model.eval()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
-        self.loss_fn = nn.MSELoss()
-        self.epsilon = epsilon
+        self,
+        lr: float = 1e-3,
+        gamma: float = 0.99,
+        batch_size: int = 64,
+        target_update_freq: int = 500,   # steps between hard target-net updates
+        epsilon_start: float = 1.0,
+        epsilon_end: float = 0.05,
+        epsilon_decay: int = 10_000,     # steps over which epsilon anneals
+        buffer_capacity: int = 50_000,
+    ):
+        self.gamma       = gamma
+        self.batch_size  = batch_size
+        self.target_update_freq = target_update_freq
+        self.epsilon_start = epsilon_start
+        self.epsilon_end   = epsilon_end
         self.epsilon_decay = epsilon_decay
-        self.epsilon_min = epsilon_min
-        self.gamma = gamma
-        self.replay_buffer = ReplayBuffer(capacity=50_000)
-        self._update_counter = 0
-        self._push_count = 0
-        self.model.eval()
 
-    def predict(self: "Agent", board: Board) -> torch.Tensor:
-        state = Board.board_to_tensor(board).to(self.device)
-        with torch.no_grad():
-            return self.model(state)
+        self.steps_done = 0
 
-    def select_action(self: "Agent", board: Board, valid_moves: Optional[list[int]] = None) -> int:
-        if valid_moves is None:
-            valid_moves = board.valid_moves()
-        if not valid_moves:
-            return 0
+        self.policy_net = ConnectFourNet().to(device)
+        self.target_net = ConnectFourNet().to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.buffer    = ReplayBuffer(buffer_capacity)
+
+    # ---- epsilon schedule ------------------------------------------------
+
+    @property
+    def epsilon(self) -> float:
+        decay = self.epsilon_decay
+        e = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
+            np.exp(-self.steps_done / decay)
+        return float(e)
+
+    # ---- action selection ------------------------------------------------
+
+    def select_action(self, board: Board) -> int:
+        """Epsilon-greedy action selection."""
+        valid = board.valid_moves()
         if random.random() < self.epsilon:
-            return random.choice(valid_moves)
-        state = Board.board_to_tensor(board).to(self.device)
+            return random.choice(valid)
+        return self.policy_net.best_move(board)
+
+    # ---- learning step ---------------------------------------------------
+
+    def learn(self) -> Optional[float]:
+        """Sample a mini-batch and perform one gradient step. Returns loss."""
+        if len(self.buffer) < self.batch_size:
+            return None
+
+        states, actions, rewards, next_states, dones = self.buffer.sample(self.batch_size)
+
+        # Reshape flat tensors → (b, 2, 6, 7)
+        s  = states.view(-1, 2, Board.ROWS, Board.COLS)
+        ns = next_states.view(-1, 2, Board.ROWS, Board.COLS)
+
+        # Q(s, a)
+        self.policy_net.train()
+        q_values = self.policy_net(s).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        # max_a' Q_target(s', a')
         with torch.no_grad():
-            q_values = self.model(state)[0]
-        masked = q_values.clone()
-        for col in range(Board.COLS):
-            if col not in valid_moves:
-                masked[col] = -float("inf")
-        return int(torch.argmax(masked).item())
+            next_q = self.target_net(ns).max(dim=1).values
+            target = rewards + self.gamma * next_q * (1.0 - dones)
 
-    def train_step(
-        self: "Agent",
-    ) -> None:
-        if len(self.replay_buffer) < self.MIN_BUFFER:
-            return
+        loss = F.smooth_l1_loss(q_values, target)
 
-        transitions = self.replay_buffer.sample(self.BATCH_SIZE)
-        states, actions, rewards, next_states, dones = zip(*transitions)
-
-        state_batch = torch.stack(list(states)).to(self.device)
-        action_batch = torch.tensor(actions, dtype=torch.long, device=self.device)
-        reward_batch = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-        next_state_batch = torch.stack(list(next_states)).to(self.device)
-        done_batch = torch.tensor(dones, dtype=torch.float32, device=self.device)
-
-        self.model.train()
-        q_values = self.model(state_batch)
-        q_selected = q_values.gather(1, action_batch.unsqueeze(1)).squeeze(1)
-        with torch.no_grad():
-            next_q_values = self.target_model(next_state_batch)
-            max_next_q = next_q_values.max(dim=1).values
-            target_values = reward_batch + (1.0 - done_batch) * self.gamma * max_next_q
-
-        loss = self.loss_fn(q_selected, target_values)
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
         self.optimizer.step()
-        self._update_counter += 1
-        if self._update_counter % self.TARGET_UPDATE_FREQ == 0:
-            self.target_model.load_state_dict(self.model.state_dict())
-        self.model.eval()
 
-    def push(
-        self: "Agent",
-        state: torch.Tensor,
-        action: int,
-        reward: float,
-        next_state: torch.Tensor,
-        done: bool,
-    ) -> None:
-        cpu_state = state.detach().cpu()
-        cpu_next_state = next_state.detach().cpu()
-        if cpu_state.dim() > 1:
-            cpu_state = cpu_state.squeeze(0)
-        if cpu_next_state.dim() > 1:
-            cpu_next_state = cpu_next_state.squeeze(0)
-        self.replay_buffer.push(cpu_state, action, float(reward), cpu_next_state, bool(done))
-        self._push_count += 1
+        self.steps_done += 1
+
+        # Hard update target network
+        if self.steps_done % self.target_update_freq == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+
+        return loss.item()
+
+    # ---- persistence -----------------------------------------------------
+
+    def save(self, path: str = "agent.pth"):
+        torch.save({
+            "policy_net": self.policy_net.state_dict(),
+            "target_net": self.target_net.state_dict(),
+            "optimizer":  self.optimizer.state_dict(),
+            "steps_done": self.steps_done,
+        }, path)
+        print(f"[Agent] Saved → {path}")
+
+    def load(self, path: str = "agent.pth"):
+        ckpt = torch.load(path, map_location=device)
+        self.policy_net.load_state_dict(ckpt["policy_net"])
+        self.target_net.load_state_dict(ckpt["target_net"])
+        self.optimizer.load_state_dict(ckpt["optimizer"])
+        self.steps_done = ckpt.get("steps_done", 0)
+        print(f"[Agent] Loaded ← {path}  (step {self.steps_done})")
+
+
+# ---------------------------------------------------------------------------
+# Quick sanity check
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    board = Board()
+    agent = DQNAgent()
+
+    print(f"Device: {device}")
+    print(f"Policy net params: {sum(p.numel() for p in agent.policy_net.parameters()):,}")
+
+    # forward-pass smoke test
+    dummy = Board.board_to_tensor(board).view(1, 2, Board.ROWS, Board.COLS)
+    out   = agent.policy_net(dummy)
+    print(f"Output shape: {out.shape}")   # should be torch.Size([1, 7])
+
+    # action selection
+    action = agent.select_action(board)
+    print(f"Selected action: {action}")
+
+    print("Sanity check passed ✓")
