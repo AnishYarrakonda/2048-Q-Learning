@@ -158,14 +158,16 @@ class ConnectFourGUI:
         self.root.resizable(False, False)
 
         self.board = Board()
-        self.agent = Agent()
+        self.agent_p1 = Agent()
+        self.agent_p2 = Agent()
 
         self.mode_var = tk.StringVar(value="Human vs AI")
         self.human_side_var = tk.StringVar(value="First (Player 1)")
         self.turn_var = tk.StringVar(value="Turn: Player 1 (Red)")
         self.result_var = tk.StringVar(value="")
         self.match_var = tk.StringVar(value="")
-        self.model_var = tk.StringVar(value="Model: Not loaded (AI will pick random valid moves)")
+        self.model_p1_var = tk.StringVar(value="P1 Model: Not loaded (AI will pick random valid moves)")
+        self.model_p2_var = tk.StringVar(value="P2 Model: Not loaded (AI will pick random valid moves)")
 
         self.current_player = 1
         self.game_over = False
@@ -196,6 +198,7 @@ class ConnectFourGUI:
             self.mode_var,
             "Human vs AI",
             "Human vs Human",
+            "Agent vs Agent",
             command=lambda _value: self.on_mode_change(),
         )
         mode_menu.grid(row=0, column=1, sticky="w")
@@ -210,22 +213,26 @@ class ConnectFourGUI:
         )
         side_menu.grid(row=0, column=3, sticky="w")
 
-        tk.Button(controls, text="Load Model (.pt)", command=self.load_model_file).grid(
+        tk.Button(controls, text="Load P1 Model (.pt)", command=lambda: self.load_model_file(1)).grid(
             row=0, column=4, padx=8
         )
-        tk.Button(controls, text="Start Game", command=self.start_game).grid(row=0, column=5, padx=4)
-        tk.Button(controls, text="Reset Game", command=self.reset_game).grid(row=0, column=6, padx=4)
-        tk.Button(controls, text="Quit", command=self.root.destroy).grid(row=0, column=7, padx=4)
+        tk.Button(controls, text="Load P2 Model (.pt)", command=lambda: self.load_model_file(2)).grid(
+            row=0, column=5, padx=8
+        )
+        tk.Button(controls, text="Start Game", command=self.start_game).grid(row=0, column=6, padx=4)
+        tk.Button(controls, text="Reset Game", command=self.reset_game).grid(row=0, column=7, padx=4)
+        tk.Button(controls, text="Quit", command=self.root.destroy).grid(row=0, column=8, padx=4)
 
-        tk.Label(controls, text="AI Speed (ms):").grid(row=0, column=8, padx=(12, 4))
+        tk.Label(controls, text="AI Speed (ms):").grid(row=0, column=9, padx=(12, 4))
         self.ai_speed = tk.Scale(controls, from_=30, to=900, orient="horizontal", length=160)
         self.ai_speed.set(220)
-        self.ai_speed.grid(row=0, column=9, sticky="w")
+        self.ai_speed.grid(row=0, column=10, sticky="w")
 
         tk.Label(self.root, textvariable=self.match_var, font=("Helvetica", 11)).pack(anchor="w", padx=10)
         tk.Label(self.root, textvariable=self.turn_var, font=("Helvetica", 12, "bold")).pack(anchor="w", padx=10)
         tk.Label(self.root, textvariable=self.result_var, font=("Helvetica", 11)).pack(anchor="w", padx=10, pady=(2, 2))
-        tk.Label(self.root, textvariable=self.model_var, font=("Helvetica", 10), fg="#333").pack(anchor="w", padx=10)
+        tk.Label(self.root, textvariable=self.model_p1_var, font=("Helvetica", 10), fg="#333").pack(anchor="w", padx=10)
+        tk.Label(self.root, textvariable=self.model_p2_var, font=("Helvetica", 10), fg="#333").pack(anchor="w", padx=10)
 
     def _build_board_canvas(self) -> None:
         width = Board.COLS * self.CELL
@@ -321,23 +328,28 @@ class ConnectFourGUI:
             self.active_falling_token = None
         self.animating = False
 
-    def model_display_name(self) -> str:
-        if self.agent.model_path:
-            return os.path.basename(self.agent.model_path)
+    def model_display_name(self, player: int) -> str:
+        agent = self.agent_p1 if player == 1 else self.agent_p2
+        if agent.model_path:
+            return os.path.basename(agent.model_path)
         return "random-policy"
 
     def update_match_label(self) -> None:
         mode = self.mode_var.get()
-        model_name = self.model_display_name()
         if mode == "Human vs Human":
             text = "Player 1: Human | Player 2: Human"
+        elif mode == "Agent vs Agent":
+            text = (
+                f"Player 1: CPU ({self.model_display_name(1)}) | "
+                f"Player 2: CPU ({self.model_display_name(2)})"
+            )
         elif self.human_side_var.get().startswith("Second"):
-            text = f"Player 1: CPU ({model_name}) | Player 2: Human"
+            text = f"Player 1: CPU ({self.model_display_name(1)}) | Player 2: Human"
         else:
-            text = f"Player 1: Human | Player 2: CPU ({model_name})"
+            text = f"Player 1: Human | Player 2: CPU ({self.model_display_name(2)})"
         self.match_var.set(text)
 
-    def load_model_file(self) -> None:
+    def load_model_file(self, player: int) -> None:
         path = filedialog.askopenfilename(
             title="Load PyTorch Model",
             filetypes=[("PyTorch model", "*.pt *.pth"), ("All files", "*.*")],
@@ -345,10 +357,16 @@ class ConnectFourGUI:
         if not path:
             return
 
-        success, msg = self.agent.load_model(path)
-        self.model_var.set(
-            f"Model: {path}" if success else "Model: Not loaded (AI will pick random valid moves)"
-        )
+        agent = self.agent_p1 if player == 1 else self.agent_p2
+        success, msg = agent.load_model(path)
+        if player == 1:
+            self.model_p1_var.set(
+                f"P1 Model: {path}" if success else "P1 Model: Not loaded (AI will pick random valid moves)"
+            )
+        else:
+            self.model_p2_var.set(
+                f"P2 Model: {path}" if success else "P2 Model: Not loaded (AI will pick random valid moves)"
+            )
         self.update_match_label()
         if success:
             messagebox.showinfo("Model", msg)
@@ -369,6 +387,8 @@ class ConnectFourGUI:
         mode = self.mode_var.get()
         if mode == "Human vs Human":
             return True
+        if mode == "Agent vs Agent":
+            return False
         if mode == "Human vs AI":
             if self.human_side_var.get().startswith("Second"):
                 return self.current_player == 2
@@ -377,11 +397,16 @@ class ConnectFourGUI:
 
     def is_ai_turn(self) -> bool:
         mode = self.mode_var.get()
+        if mode == "Agent vs Agent":
+            return True
         if mode == "Human vs AI":
             if self.human_side_var.get().startswith("Second"):
                 return self.current_player == 1
             return self.current_player == 2
         return False
+
+    def ai_agent_for_current_player(self) -> Agent:
+        return self.agent_p1 if self.current_player == 1 else self.agent_p2
 
     def schedule_ai_if_needed(self) -> None:
         if self.game_over or self.animating:
@@ -401,7 +426,8 @@ class ConnectFourGUI:
         if not valid:
             return
 
-        col = self.agent.select_move(self.board, valid)
+        agent = self.ai_agent_for_current_player()
+        col = agent.select_move(self.board, valid)
         self.try_move(col)
 
     def try_move(self, col: int) -> None:
