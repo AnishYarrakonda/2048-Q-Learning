@@ -2,6 +2,7 @@
 import os
 import time
 import statistics
+import tkinter as tk
 from typing import TypedDict
 
 import matplotlib.pyplot as plt
@@ -65,6 +66,79 @@ class ANSI:
     CYAN = "\033[96m"
     MAGENTA = "\033[95m"
     RESET = "\033[0m"
+
+
+class TrainingTkViewer:
+    CELL = 72
+    PAD = 10
+    BG = "#0e3d63"
+    BOARD = "#1769aa"
+    EMPTY = "#f2f7fb"
+    P1 = "#d62828"
+    P2 = "#f4c430"
+
+    def __init__(self, watch_delay: float) -> None:
+        self.watch_delay = watch_delay
+        self.enabled = True
+        self.root = tk.Tk()
+        self.root.title("Training Game Viewer")
+        self.root.resizable(False, False)
+        self.status_var = tk.StringVar(value="Waiting for training...")
+        tk.Label(self.root, textvariable=self.status_var, font=("Helvetica", 11, "bold")).pack(anchor="w", padx=8, pady=6)
+        width = Board.COLS * self.CELL
+        height = Board.ROWS * self.CELL
+        self.canvas = tk.Canvas(self.root, width=width, height=height, bg=self.BG, highlightthickness=0)
+        self.canvas.pack(padx=8, pady=8)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+    def close(self) -> None:
+        if not self.enabled:
+            return
+        self.enabled = False
+        self.root.destroy()
+
+    def _cell_bbox(self, row: int, col: int) -> tuple[float, float, float, float]:
+        visual_row = Board.ROWS - 1 - row
+        x0 = col * self.CELL + self.PAD
+        y0 = visual_row * self.CELL + self.PAD
+        x1 = (col + 1) * self.CELL - self.PAD
+        y1 = (visual_row + 1) * self.CELL - self.PAD
+        return x0, y0, x1, y1
+
+    def render(self, board: Board, episode: int, done: bool, winner: int) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.canvas.delete("all")
+            w = Board.COLS * self.CELL
+            h = Board.ROWS * self.CELL
+            self.canvas.create_rectangle(0, 0, w, h, fill=self.BOARD, outline=self.BOARD)
+            for r in range(Board.ROWS):
+                for c in range(Board.COLS):
+                    x0, y0, x1, y1 = self._cell_bbox(r, c)
+                    player = 0
+                    if board.player1_bits[r, c].item() == 1:
+                        player = 1
+                    elif board.player2_bits[r, c].item() == 1:
+                        player = 2
+                    color = self.EMPTY if player == 0 else (self.P1 if player == 1 else self.P2)
+                    self.canvas.create_oval(x0, y0, x1, y1, fill=color, outline="#1e1e1e", width=2)
+
+            if done:
+                if winner == 0:
+                    status = f"Episode {episode}: Draw"
+                else:
+                    status = f"Episode {episode}: Player {winner} won"
+            else:
+                next_player = 1 if board.turn % 2 == 0 else 2
+                status = f"Episode {episode}: Turn {board.turn} | Next Player {next_player}"
+            self.status_var.set(status)
+            self.root.update_idletasks()
+            self.root.update()
+            if self.watch_delay > 0:
+                time.sleep(self.watch_delay)
+        except tk.TclError:
+            self.enabled = False
 
 
 def ask_yes_no(prompt: str, default: bool) -> bool:
@@ -182,7 +256,7 @@ def configure_visuals(config: Config) -> None:
         return
     config["watch_game"] = ask_yes_no("Watch board states while running?", config["watch_game"])
     if config["watch_game"]:
-        config["watch_steps"] = ask_int("Show board every N turns", config["watch_steps"], minimum=1)
+        config["watch_steps"] = ask_int("Show a full game in Tkinter every N episodes", config["watch_steps"], minimum=1)
         config["watch_delay"] = ask_float(
             "Delay between board prints (seconds)", config["watch_delay"], minimum=0.0
         )
@@ -289,6 +363,8 @@ def play_game(
     watch_delay: float = 0.2,
     win_reward: float = 1.0,
     loss_reward: float = -1.0,
+    viewer: TrainingTkViewer | None = None,
+    episode: int = 0,
 ) -> tuple[int, int]:
     board = Board()
     done = False
@@ -315,10 +391,8 @@ def play_game(
 
         done, winner = board.game_over(row, action)
 
-        if watch_game and watch_steps > 0 and board.turn % watch_steps == 0:
-            print(board)
-            if watch_delay > 0:
-                time.sleep(watch_delay)
+        if watch_game and viewer is not None:
+            viewer.render(board=board, episode=episode, done=done, winner=winner)
 
         if train:
             reward = 0.0
@@ -439,6 +513,94 @@ def build_training_plots(
     plt.show()
 
 
+def update_live_training_plots(
+    fig: plt.Figure,
+    axes: list[list[plt.Axes]],
+    episodes: list[int],
+    winners: list[int],
+    game_lengths: list[int],
+    epsilons: list[float],
+    run_name: str,
+) -> None:
+    if not episodes:
+        return
+    window = max(10, len(episodes) // 20)
+    p1_binary = [1.0 if w == 1 else 0.0 for w in winners]
+    p2_binary = [1.0 if w == 2 else 0.0 for w in winners]
+    draw_binary = [1.0 if w == 0 else 0.0 for w in winners]
+    decisive_binary = [1.0 if w != 0 else 0.0 for w in winners]
+    p1_roll = moving_average(p1_binary, window)
+    p2_roll = moving_average(p2_binary, window)
+    draw_roll = moving_average(draw_binary, window)
+    decisive_roll = moving_average(decisive_binary, window)
+    p1_edge = [p1_roll[i] - p2_roll[i] for i in range(len(p1_roll))]
+    avg_len = moving_average([float(x) for x in game_lengths], window)
+    med_len: list[float] = []
+    for i in range(len(game_lengths)):
+        start = max(0, i - window + 1)
+        med_len.append(float(statistics.median(game_lengths[start : i + 1])))
+
+    cum_p1: list[int] = []
+    cum_p2: list[int] = []
+    cum_draw: list[int] = []
+    p1_sum = p2_sum = d_sum = 0
+    for w in winners:
+        if w == 1:
+            p1_sum += 1
+        elif w == 2:
+            p2_sum += 1
+        else:
+            d_sum += 1
+        cum_p1.append(p1_sum)
+        cum_p2.append(p2_sum)
+        cum_draw.append(d_sum)
+
+    for row in axes:
+        for ax in row:
+            ax.clear()
+
+    axes[0][0].plot(episodes, cum_p1, color="red", label="Player 1 Wins")
+    axes[0][0].plot(episodes, cum_p2, color="goldenrod", label="Player 2 Wins")
+    axes[0][0].plot(episodes, cum_draw, color="steelblue", label="Draws")
+    axes[0][0].set_title("Cumulative Outcomes")
+    axes[0][0].set_xlabel("Episode")
+    axes[0][0].set_ylabel("Count")
+    axes[0][0].grid(alpha=0.25)
+    axes[0][0].legend()
+
+    axes[0][1].plot(episodes, avg_len, color="purple", label=f"Avg Length ({window}-ep)")
+    axes[0][1].plot(episodes, med_len, color="teal", label=f"Median Length ({window}-ep)")
+    axes[0][1].set_title("Game Length Trends")
+    axes[0][1].set_xlabel("Episode")
+    axes[0][1].set_ylabel("Moves per Game")
+    axes[0][1].grid(alpha=0.25)
+    axes[0][1].legend()
+
+    axes[1][0].plot(episodes, p1_roll, color="red", label="P1 Win Rate")
+    axes[1][0].plot(episodes, p2_roll, color="goldenrod", label="P2 Win Rate")
+    axes[1][0].plot(episodes, draw_roll, color="steelblue", label="Draw Rate")
+    axes[1][0].plot(episodes, decisive_roll, color="green", linestyle="--", label="Decisive Rate")
+    axes[1][0].set_title(f"Rolling Outcome Rates ({window}-episode window)")
+    axes[1][0].set_xlabel("Episode")
+    axes[1][0].set_ylabel("Rate")
+    axes[1][0].set_ylim(-0.02, 1.02)
+    axes[1][0].grid(alpha=0.25)
+    axes[1][0].legend()
+
+    axes[1][1].plot(episodes, epsilons, color="magenta", label="Epsilon")
+    axes[1][1].plot(episodes, p1_edge, color="black", linestyle="--", label="P1 Edge (P1-P2 rate)")
+    axes[1][1].set_title("Exploration + First-Player Advantage")
+    axes[1][1].set_xlabel("Episode")
+    axes[1][1].set_ylabel("Value")
+    axes[1][1].grid(alpha=0.25)
+    axes[1][1].legend()
+
+    fig.suptitle(f"Training Dashboard - {run_name}", fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
+    fig.canvas.draw_idle()
+    plt.pause(0.001)
+
+
 def checkpoint_path(config: Config, episode: int) -> str:
     return os.path.join(config["save_dir"], f"{config['run_name']}_checkpoint_{episode}.pt")
 
@@ -488,16 +650,25 @@ def run_training(config: Config) -> None:
     game_lengths: list[int] = []
     episodes: list[int] = []
     epsilons: list[float] = []
+    viewer: TrainingTkViewer | None = None
+    if config["watch_game"]:
+        viewer = TrainingTkViewer(watch_delay=config["watch_delay"])
+    plt.ion()
+    live_fig, live_axes = plt.subplots(2, 2, figsize=(15, 10))
+    plt.show(block=False)
 
     for episode in range(1, config["num_episodes"] + 1):
+        render_this_episode = bool(config["watch_game"] and config["watch_steps"] > 0 and episode % config["watch_steps"] == 0)
         winner, game_length = play_game(
             agent=agent,
             train=config["train"],
-            watch_game=config["watch_game"],
+            watch_game=render_this_episode,
             watch_steps=config["watch_steps"],
             watch_delay=config["watch_delay"],
             win_reward=config["win_reward"],
             loss_reward=config["loss_reward"],
+            viewer=viewer,
+            episode=episode,
         )
         winners.append(winner)
         game_lengths.append(game_length)
@@ -534,6 +705,16 @@ def run_training(config: Config) -> None:
                     checkpoint_note=checkpoint_note,
                 )
             )
+        if episode % 25 == 0:
+            update_live_training_plots(
+                fig=live_fig,
+                axes=live_axes,  # type: ignore[arg-type]
+                episodes=episodes,
+                winners=winners,
+                game_lengths=game_lengths,
+                epsilons=epsilons,
+                run_name=config["run_name"],
+            )
 
     print(
         "\n"
@@ -550,6 +731,16 @@ def run_training(config: Config) -> None:
         )
     )
     print("Training complete.")
+    update_live_training_plots(
+        fig=live_fig,
+        axes=live_axes,  # type: ignore[arg-type]
+        episodes=episodes,
+        winners=winners,
+        game_lengths=game_lengths,
+        epsilons=epsilons,
+        run_name=config["run_name"],
+    )
+    plt.ioff()
     build_training_plots(
         episodes=episodes,
         winners=winners,
