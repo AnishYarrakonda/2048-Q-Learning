@@ -6,14 +6,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# use gpu for faster operations
-device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
-
 # agent object
 class Agent:
     
     # initialize the agent
     def __init__(self, layers: list[int], lr=0.001, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01, gamma=0.95):
+        # use gpu for faster operations
+        self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+
         # stores all of the layers to be unpacked into the model
         modules: list[nn.Module] = [nn.Flatten()]
 
@@ -21,12 +21,12 @@ class Agent:
 
         # add hidden layers dynamically
         for hidden_size in layers:
-            modules.append(nn.Linear(input_size, hidden_size))
+            modules.append(nn.Linear(input_size, hidden_size, device=self.device))
             modules.append(nn.ReLU())
             input_size = hidden_size
 
         # output layer
-        modules.append(nn.Linear(input_size, 7))  # 7 possible moves
+        modules.append(nn.Linear(input_size, 7, device=self.device))  # 7 possible moves
 
         # combine all modules
         self.model = nn.Sequential(*modules)
@@ -65,35 +65,54 @@ class Agent:
 
 
     # train on a single step using TD update
-    def train_step(
+def train_step(
         self: "Agent",
         state: torch.Tensor,
         action: int,
-        reward: Union[float, torch.Tensor],
+        reward: float,
         next_state: torch.Tensor,
         done: bool,
     ) -> None:
+
+        # move tensors to correct device
+        state = state.to(self.device)
+        next_state = next_state.to(self.device)
+
+        # ensure batch dimension (model expects [batch, features])
+        if state.dim() == 3:
+            state = state.unsqueeze(0)
+        if next_state.dim() == 3:
+            next_state = next_state.unsqueeze(0)
+
         # 1. predict Q-values for current state
         q_values = self.model(state)
 
-        # 2. predict Q-values for next state
+        # 2. compute target Q-values
         with torch.no_grad():
             next_q_values = self.model(next_state)
 
-        # 3. compute target for chosen action
+        # clone current predictions so we only modify chosen action
+        target_q = q_values.clone().detach()
+
         if done:
-            target = reward
+            target_value = reward
         else:
-            target = reward + self.gamma * torch.max(next_q_values)
+            max_next_q = torch.max(next_q_values)
+            target_value = reward + self.gamma * max_next_q.item()
 
-        # 4. compute loss only for chosen action using self.loss_fn
-        loss = self.loss_fn(q_values[0, action], target)
+        # convert to tensor on correct device
+        target_q[0, action] = torch.tensor(
+            target_value, dtype=torch.float32, device=self.device
+        )
 
-        # 5. backprop
+        # 3. compute loss across full Q vector
+        loss = self.loss_fn(q_values, target_q)
+
+        # 4. backprop
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        # 6. decay epsilon
+        # 5. decay epsilon
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
