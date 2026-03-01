@@ -5,7 +5,7 @@ from board import Board
 from agent import Agent
 
 # simulate a single game
-def play_game(agent: Agent, train: bool = True) -> int:
+def play_game(agent: Agent, train: bool = True, watch: bool = False) -> int:
     board = Board()     # make the board
     done = False        # track if game is done
     winner = 0          # store the winner
@@ -39,9 +39,9 @@ def play_game(agent: Agent, train: bool = True) -> int:
         # check if game is over (win/draw)
         done, winner = board.game_over(row, action)
 
-        # always print the board
-        print(board)
-        time.sleep(0.1)  # small delay for visualization
+        # print board if we want to watch the game
+        if watch:
+            print(board)
 
         if train:
             # reward from the acting player's perspective
@@ -92,8 +92,8 @@ if __name__ == "__main__":
         if agent_1.epsilon > agent_1.epsilon_min:
             agent_1.epsilon *= agent_1.epsilon_decay
 
-        # print progress every 50 episodes
-        if (episode + 1) % 50 == 0:
+        # print progress every 25 episodes
+        if (episode + 1) % 25 == 0:
             print(f"Episode {episode + 1} completed: {stats}")
 
         # optional: save model every 500 episodes
