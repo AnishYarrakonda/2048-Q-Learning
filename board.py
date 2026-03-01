@@ -7,6 +7,13 @@ device = torch.device("mps") if torch.backends.mps.is_available() else torch.dev
 # board object
 class Board:
 
+    # convert board state to tensor for neural network input
+    @staticmethod
+    def board_to_tensor(board):
+        state = torch.stack([board.player1_bits, board.player2_bits])
+        state = state.unsqueeze(0)
+        return state.to(device)
+
     # create board
     def __init__(self):
         # stores bit boards for each player
@@ -135,6 +142,7 @@ class Board:
                 return i  # Return the row where the coin landed
 
         return None
+    
     
 
     # prints the board state
