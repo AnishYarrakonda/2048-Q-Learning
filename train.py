@@ -172,7 +172,7 @@ def run_training() -> None:
             if promote:
                 save_checkpoint(agent, ep, stage)
                 stage   += 1
-                opponent = MinimaxOpponent(depth=stage + 1)
+                opponent = MCTSOpponent(depth=stage + 1)
                 promo_str = f" {ANSI.GREEN}→ PROMOTED depth {stage + 1}{ANSI.RESET}"
 
             print(
