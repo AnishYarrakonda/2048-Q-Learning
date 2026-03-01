@@ -466,7 +466,6 @@ def save_checkpoint(agent: Agent, config: Config, episode: int) -> str:
 
 def run_training(config: Config) -> None:
     REPORT_INTERVAL = 50
-    EVAL_INTERVAL = 250
     EVAL_GAMES = 100
     SNAPSHOT_INTERVAL = 1000
     CHECKPOINT_INTERVAL = 1000
@@ -563,16 +562,15 @@ def run_training(config: Config) -> None:
         block_seconds = now - block_start
         total_seconds = now - total_start
         eval_summary = ""
-        if episode % EVAL_INTERVAL == 0:
-            target_episode = max(0, episode - SNAPSHOT_INTERVAL)
-            candidate_snapshots = [ep for ep in frozen_snapshots if ep <= target_episode]
-            snapshot_episode = max(candidate_snapshots) if candidate_snapshots else 0
+        if episode % SNAPSHOT_INTERVAL == 0:
+            snapshot_episode = episode - SNAPSHOT_INTERVAL
             eval_wins = evaluate_vs_snapshot(
                 agent=agent,
                 snapshot_state_dict=frozen_snapshots[snapshot_episode],
                 num_games=EVAL_GAMES,
             )
             eval_summary = f"Self-Play vs Ep{snapshot_episode}: {eval_wins}/{EVAL_GAMES}"
+            print(f"Self-play evaluation at episode {episode}: won {eval_wins}/{EVAL_GAMES} vs episode {snapshot_episode}")
 
         if episode % REPORT_INTERVAL == 0:
             print(
