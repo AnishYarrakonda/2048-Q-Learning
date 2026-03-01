@@ -13,25 +13,34 @@ device = torch.device("mps") if torch.backends.mps.is_available() else torch.dev
 class Agent:
     
     # initialize the agent
-    def __init__(self: "Agent") -> None:
-        # neural network model
-        self.model = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(in_features=2*6*7, out_features=128),
-            nn.ReLU(),
-            nn.Linear(in_features=128, out_features=7)
-        )
+    def __init__(self, layers: list[int]):
+        # stores all of the layers to be unpacked into the model
+        modules: list[nn.Module] = [nn.Flatten()]
 
-        # loss function and optimizer for training the model
-        self.loss_fn = nn.MSELoss()
+        input_size = 2 * 6 * 7  # input dimension
+
+        # add hidden layers dynamically
+        for hidden_size in layers:
+            modules.append(nn.Linear(input_size, hidden_size))
+            modules.append(nn.ReLU())
+            input_size = hidden_size
+
+        # output layer
+        modules.append(nn.Linear(input_size, 7))  # 7 possible moves
+
+        # combine all modules
+        self.model = nn.Sequential(*modules)
+
+        # optimizer and loss
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        
-        # exploration rate for epsilon-greedy action selection
+        self.loss_fn = nn.MSELoss()
+
+        # epsilon-greedy parameters
         self.epsilon = 1.0
         self.epsilon_decay = 0.995
         self.epsilon_min = 0.01
 
-        # gamma for discounting future rewards
+        # discount factor
         self.gamma = 0.95
 
 

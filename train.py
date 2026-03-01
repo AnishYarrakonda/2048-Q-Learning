@@ -5,7 +5,7 @@ from board import Board
 from agent import Agent
 
 # simulate a single game
-def play_game(agent: Agent, ):
+def play_game(agent: Agent, train=True):
     board = Board()
     done = False
     winner = 0
@@ -13,4 +13,4 @@ def play_game(agent: Agent, ):
     while not done:
         state = Board.board_to_tensor(board=board)
 
-        action = agent.
+        action = agent.select_action(board=board)
