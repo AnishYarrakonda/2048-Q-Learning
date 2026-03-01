@@ -21,9 +21,10 @@ class Agent:
             nn.Linear(in_features=128, out_features=7)
         )
 
-        # optimizer for training the model
+        # loss function and optimizer for training the model
+        self.loss_fn = nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-
+        
         # exploration rate for epsilon-greedy action selection
         self.epsilon = 1.0
         self.epsilon_decay = 0.995
@@ -68,8 +69,8 @@ class Agent:
         else:
             target = reward + self.gamma * torch.max(next_q_values)
 
-        # 4. compute loss only for chosen action
-        loss = F.mse_loss(q_values[0, action], target)
+        # 4. compute loss only for chosen action using self.loss_fn
+        loss = self.loss_fn(q_values[0, action], target)
 
         # 5. backprop
         self.optimizer.zero_grad()
