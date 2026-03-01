@@ -146,7 +146,7 @@ def run_training() -> None:
         print(f"Resumed from {RESUME_PATH}")
 
     stage    = 0
-    opponent = MinimaxOpponent(depth=stage + 1)
+    opponent = MCTSOpponent(depth=stage + 1)
 
     w_wins = w_losses = w_draws = 0
     game_lengths = []
