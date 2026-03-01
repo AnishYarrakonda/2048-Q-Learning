@@ -119,6 +119,10 @@ class FastBoard:
                 return True
         return False
 
+    def last_player(self) -> int:
+        """The player who just moved."""
+        return ((self.turn - 1) & 1) + 1
+
     def is_full(self) -> bool:
         return self.turn >= SIZE
 
