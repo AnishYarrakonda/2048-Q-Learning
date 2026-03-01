@@ -225,12 +225,13 @@ def _minimax(fb: FastBoard, depth: int, alpha: int, beta: int,
 # ---------------------------------------------------------------------------
 
 class MinimaxOpponent:
-    def __init__(self, depth: int = 1, n_simulations: int = 0):
+    def __init__(self, depth: int = 0, n_simulations: int = 0):
         """
-        depth        : search depth (1–6 recommended).
-                       n_simulations is ignored — kept for API compatibility.
+        depth=0  → pure random (stage 0 baseline)
+        depth=N  → minimax search to depth N (stages 1–6)
+        n_simulations is ignored — kept for API compatibility.
         """
-        self.depth = max(1, depth)
+        self.depth = max(0, depth)
 
     def select_action(self, board: Board) -> int:
         fb = FastBoard.from_board(board)
@@ -240,10 +241,15 @@ class MinimaxOpponent:
         return self._pick(fb)
 
     def _pick(self, fb: FastBoard) -> int:
-        heights     = fb.heights
-        valid       = [c for c in _COL_ORDER if heights[c] < ROWS]
+        heights = fb.heights
+        valid   = [c for c in _COL_ORDER if heights[c] < ROWS]
         if not valid:
             return 0
+
+        # Depth 0 = pure random, no search
+        if self.depth == 0:
+            return random.choice(valid)
+
         if len(valid) == 1:
             return valid[0]
 

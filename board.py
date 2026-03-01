@@ -4,7 +4,10 @@ from typing import Optional
 
 # board ops stay on CPU; NN input gets moved to accelerator in board_to_tensor
 _cpu = torch.device("cpu")
-device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+# MPS (Apple Silicon GPU) is SLOWER than CPU for our workload:
+# batch size 64 is too small — the transfer overhead dominates compute.
+# Forcing CPU gives consistent ~3s/250 games with no memory pressure spikes.
+device = torch.device("cpu")
 
 # board object
 class Board:

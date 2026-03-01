@@ -37,8 +37,9 @@ NUM_EPISODES    = 50_000
 SAVE_INTERVAL   = 5_000
 WINDOW          = 250          # print stats every N training episodes
 
-# Curriculum
-MAX_DEPTH       = 6
+# Curriculum — stage 0 = random opponent, stage 1 = depth 1 minimax, etc.
+MAX_DEPTH       = 6            # final stage plays depth-6 minimax
+# current_depth=0 means pure random, current_depth=N means minimax depth N
 
 # Training random starts
 TRAIN_RAND_MIN  = 4
@@ -237,13 +238,13 @@ def save_checkpoint(agent: DQNAgent, episode: int, depth: int) -> str:
 # ---------------------------------------------------------------------------
 
 def run_training() -> None:
-    print(f"Curriculum DQN — {NUM_EPISODES} episodes | Minimax depth 1→{MAX_DEPTH}")
+    print(f"Curriculum DQN — {NUM_EPISODES} episodes | depth 0 (random) → {MAX_DEPTH} (minimax)")
     print(f"Train starts: random {TRAIN_RAND_MIN}–{TRAIN_RAND_MAX} moves in")
     print(f"Promotion: every {EVAL_INTERVAL} eps | "
           f"{EVAL_WIN_THRESHOLD}/{EVAL_GAMES} greedy wins from "
           f"random {EVAL_RAND_MIN}–{EVAL_RAND_MAX}-move positions\n")
 
-    current_depth = 1
+    current_depth = 0                              # start vs pure random
     opponent      = MinimaxOpponent(depth=current_depth)
 
     agent = DQNAgent(
@@ -275,8 +276,9 @@ def run_training() -> None:
             total   = w_wins + w_losses + w_draws or 1
             avg_len = statistics.mean(game_lengths[-WINDOW:])
             wr      = w_wins / total
+            depth_label = "random" if current_depth == 0 else str(current_depth)
             print(
-                f"Ep {ep:>6} | Depth {ANSI.CYAN}{current_depth}{ANSI.RESET} | "
+                f"Ep {ep:>6} | Opp {ANSI.CYAN}{depth_label:>6}{ANSI.RESET} | "
                 f"W {ANSI.GREEN}{w_wins:>3}{ANSI.RESET} "
                 f"L {ANSI.RED}{w_losses:>3}{ANSI.RESET} "
                 f"D {ANSI.CYAN}{w_draws:>2}{ANSI.RESET} "
