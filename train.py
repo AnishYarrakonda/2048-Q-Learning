@@ -28,6 +28,8 @@ class Config(TypedDict):
     save_dir: str
     save_final: bool
     final_model_path: str
+    resume_training: bool
+    resume_model_path: str
 
 
 DEFAULT_CONFIG: Config = {
@@ -49,6 +51,8 @@ DEFAULT_CONFIG: Config = {
     "save_dir": "models",
     "save_final": True,
     "final_model_path": "models/agent_final.pt",
+    "resume_training": False,
+    "resume_model_path": "",
 }
 
 
@@ -144,6 +148,9 @@ def configure_agent(config: Config) -> None:
     if section_default("Agent Settings"):
         print("Using default agent settings.")
         return
+    config["resume_training"] = ask_yes_no("Resume training from an existing model checkpoint?", config["resume_training"])
+    if config["resume_training"]:
+        config["resume_model_path"] = ask_text("Path to model checkpoint (.pt/.pth)", config["resume_model_path"])
     config["layers"] = ask_layers(config["layers"])
     config["lr"] = ask_float("Learning rate", config["lr"], minimum=0.0)
     config["epsilon"] = ask_float("Initial epsilon", config["epsilon"], minimum=0.0, maximum=1.0)
@@ -201,11 +208,43 @@ def build_runtime_config() -> Config:
     configure_visuals(config)
     configure_saving(config)
 
+    if config["resume_training"] and config["resume_model_path"] and config["run_name"] == DEFAULT_CONFIG["run_name"]:
+        base_name = os.path.splitext(os.path.basename(config["resume_model_path"]))[0]
+        config["run_name"] = f"{base_name}_continued"
+
     # Keep final model path aligned when untouched.
     if config["final_model_path"] == DEFAULT_CONFIG["final_model_path"]:
         config["final_model_path"] = f"{config['save_dir']}/{config['run_name']}_final.pt"
 
     return config
+
+
+def infer_layers_from_state_dict(state_dict: dict[str, torch.Tensor]) -> list[int]:
+    linear_weights: list[tuple[int, torch.Tensor]] = []
+    for key, value in state_dict.items():
+        if key.endswith(".weight") and value.ndim == 2:
+            key_prefix = key.rsplit(".", 1)[0]
+            if key_prefix.isdigit():
+                linear_weights.append((int(key_prefix), value))
+
+    linear_weights.sort(key=lambda item: item[0])
+    if len(linear_weights) < 2:
+        raise ValueError("Checkpoint does not contain enough linear layers to infer architecture.")
+
+    hidden_layers = [int(weight.shape[0]) for _, weight in linear_weights[:-1]]
+    return hidden_layers
+
+
+def load_weights_for_resume(agent: Agent, model_path: str) -> None:
+    loaded = torch.load(model_path, map_location=agent.device)
+    if isinstance(loaded, dict) and "state_dict" in loaded and isinstance(loaded["state_dict"], dict):
+        state_dict = loaded["state_dict"]
+    elif isinstance(loaded, dict):
+        state_dict = loaded
+    else:
+        raise ValueError("Unsupported checkpoint format. Expected a state_dict dictionary.")
+
+    agent.model.load_state_dict(state_dict)
 
 
 def format_progress_line(
@@ -302,14 +341,35 @@ def save_checkpoint(agent: Agent, config: Config, episode: int) -> str:
 
 
 def run_training(config: Config) -> None:
+    layers = config["layers"]
+    if config["resume_training"]:
+        if not config["resume_model_path"]:
+            raise ValueError("Resume training is enabled, but no resume_model_path was provided.")
+        if not os.path.exists(config["resume_model_path"]):
+            raise FileNotFoundError(f"Resume model not found: {config['resume_model_path']}")
+
+        loaded = torch.load(config["resume_model_path"], map_location="cpu")
+        if isinstance(loaded, dict) and "state_dict" in loaded and isinstance(loaded["state_dict"], dict):
+            state_dict = loaded["state_dict"]
+        elif isinstance(loaded, dict):
+            state_dict = loaded
+        else:
+            raise ValueError("Unsupported checkpoint format for resume.")
+        layers = infer_layers_from_state_dict(state_dict)
+
     agent = Agent(
-        layers=config["layers"],
+        layers=layers,
         lr=config["lr"],
         epsilon=config["epsilon"],
         epsilon_decay=config["epsilon_decay"],
         epsilon_min=config["epsilon_min"],
         gamma=config["gamma"],
     )
+
+    if config["resume_training"]:
+        load_weights_for_resume(agent, config["resume_model_path"])
+        print(f"Resumed from checkpoint: {config['resume_model_path']}")
+        print(f"Inferred layers from checkpoint: {layers}")
 
     p1_wins = 0
     p2_wins = 0
