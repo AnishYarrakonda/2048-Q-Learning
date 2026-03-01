@@ -218,16 +218,26 @@ def format_progress_line(
     train_enabled: bool,
     checkpoint_note: str = "",
 ) -> str:
+    def centered(label: str, value_text: str, width: int, colored_value: str) -> str:
+        plain = f"{label} {value_text}"
+        padded = plain.center(width)
+        return padded.replace(value_text, colored_value, 1)
+
     segments = [
-        f"Episode {episode}/{total}",
-        f"P1 Wins {ANSI.RED}{p1_wins}{ANSI.RESET}",
-        f"P2 Wins {ANSI.YELLOW}{p2_wins}{ANSI.RESET}",
-        f"Draws {ANSI.CYAN}{draws}{ANSI.RESET}",
-        f"Epsilon {ANSI.MAGENTA}{epsilon:.4f}{ANSI.RESET}",
-        f"Train {ANSI.GREEN if train_enabled else ANSI.RED}{train_enabled}{ANSI.RESET}",
+        centered("Episode", f"{episode}/{total}", 17, f"{episode}/{total}"),
+        centered("P1 Wins", str(p1_wins), 14, f"{ANSI.RED}{p1_wins}{ANSI.RESET}"),
+        centered("P2 Wins", str(p2_wins), 14, f"{ANSI.YELLOW}{p2_wins}{ANSI.RESET}"),
+        centered("Draws", str(draws), 11, f"{ANSI.CYAN}{draws}{ANSI.RESET}"),
+        centered("Epsilon", f"{epsilon:.4f}", 16, f"{ANSI.MAGENTA}{epsilon:.4f}{ANSI.RESET}"),
+        centered(
+            "Train",
+            str(train_enabled),
+            12,
+            f"{ANSI.GREEN if train_enabled else ANSI.RED}{train_enabled}{ANSI.RESET}",
+        ),
     ]
     if checkpoint_note:
-        segments.append(checkpoint_note)
+        segments.append(f" {checkpoint_note} ")
     return " | ".join(segments)
 
 
