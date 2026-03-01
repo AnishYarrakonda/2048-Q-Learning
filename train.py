@@ -1,5 +1,6 @@
 # imports
 import os
+import random
 import time
 import statistics
 import tkinter as tk
@@ -24,6 +25,7 @@ class Config(TypedDict):
     watch_delay: float
     win_reward: float
     loss_reward: float
+    random_start_mode: bool
     run_name: str
     save_dir: str
     save_interval: int
@@ -44,6 +46,7 @@ DEFAULT_CONFIG: Config = {
     "watch_delay": 0.1,
     "win_reward": 0.5,
     "loss_reward": -2.0,
+    "random_start_mode": False,
     "run_name": "agent",
     "save_dir": "models",
     "save_interval": 1000,
@@ -225,6 +228,10 @@ def configure_training(config: Config) -> None:
     config["num_episodes"] = ask_int("Number of episodes", config["num_episodes"], minimum=1)
     config["win_reward"] = ask_float("Reward for win", config["win_reward"])
     config["loss_reward"] = ask_float("Reward for loss", config["loss_reward"])
+    config["random_start_mode"] = ask_yes_no(
+        "Use random non-terminal game starts (0-20 preplaced coins)?",
+        config["random_start_mode"],
+    )
 
 
 def configure_visuals(config: Config) -> None:
@@ -331,8 +338,9 @@ def play_game(
     viewer: TrainingTkViewer | None = None,
     episode: int = 0,
     force_zero_epsilon: bool = False,
+    random_start_mode: bool = False,
 ) -> tuple[int, int]:
-    board = Board()
+    board = generate_episode_start_board(random_start_mode=random_start_mode)
     done = False
     winner = 0
     last_move_by_player: dict[int, tuple[torch.Tensor, int]] = {}
@@ -341,6 +349,8 @@ def play_game(
         agent.epsilon = 0.0
 
     try:
+        if watch_game and viewer is not None:
+            viewer.render(board=board, episode=episode, done=False, winner=0)
         while not done:
             valid_moves = board.valid_moves()
             if not valid_moves:
@@ -398,6 +408,48 @@ def play_game(
             agent.epsilon = original_epsilon
 
     return winner, board.turn
+
+
+def clone_board_state(board: Board) -> Board:
+    cloned = Board()
+    cloned.player1_bits.copy_(board.player1_bits)
+    cloned.player2_bits.copy_(board.player2_bits)
+    cloned.turn = board.turn
+    return cloned
+
+
+def generate_random_non_terminal_board(max_preplaced: int = 20) -> Board:
+    board = Board()
+    target_moves = random.randint(0, max_preplaced)
+
+    for _ in range(target_moves):
+        valid_moves = board.valid_moves()
+        if not valid_moves:
+            break
+
+        safe_moves: list[int] = []
+        for col in valid_moves:
+            simulated = clone_board_state(board)
+            row = simulated.make_move(col)
+            if row is None:
+                continue
+            done, _ = simulated.game_over(row=row, col=col)
+            if not done:
+                safe_moves.append(col)
+
+        if not safe_moves:
+            break
+
+        chosen_col = random.choice(safe_moves)
+        board.make_move(chosen_col)
+
+    return board
+
+
+def generate_episode_start_board(random_start_mode: bool) -> Board:
+    if random_start_mode:
+        return generate_random_non_terminal_board(max_preplaced=20)
+    return Board()
 
 
 def checkpoint_path(config: Config, episode: int) -> str:
@@ -462,6 +514,7 @@ def run_training(config: Config) -> None:
             viewer=None,
             episode=episode,
             force_zero_epsilon=False,
+            random_start_mode=config["random_start_mode"],
         )
 
         # Visualization-only rollout (not part of training/stats): greedy policy, no updates.
@@ -479,6 +532,7 @@ def run_training(config: Config) -> None:
                 viewer=viewer,
                 episode=episode,
                 force_zero_epsilon=True,
+                random_start_mode=config["random_start_mode"],
             )
         game_lengths.append(game_length)
 
