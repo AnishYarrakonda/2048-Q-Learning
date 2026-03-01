@@ -25,7 +25,7 @@ class Agent:
         # stores all of the layers to be unpacked into the model
         modules: list[nn.Module] = [nn.Flatten()]
 
-        input_size = 2 * 6 * 7  # input dimension
+        input_size = 3 * 6 * 7  # input dimension (P1 bits, P2 bits, turn plane)
 
         # add hidden layers dynamically
         for hidden_size in layers:

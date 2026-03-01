@@ -17,9 +17,11 @@ class Board:
 
     def __init__(self) -> None:
         self.grid: list[list[int]] = [[0 for _ in range(self.COLS)] for _ in range(self.ROWS)]
+        self.turn = 0
 
     def reset(self) -> None:
         self.grid = [[0 for _ in range(self.COLS)] for _ in range(self.ROWS)]
+        self.turn = 0
 
     def valid_moves(self) -> list[int]:
         return [c for c in range(self.COLS) if self.grid[self.ROWS - 1][c] == 0]
@@ -33,6 +35,7 @@ class Board:
         for row in range(self.ROWS):
             if self.grid[row][col] == 0:
                 self.grid[row][col] = player
+                self.turn += 1
                 return row
         return None
 
@@ -77,13 +80,16 @@ class Board:
         return False, 0, []
 
     def to_tensor(self, device: torch.device) -> torch.Tensor:
-        state = torch.zeros((1, 2, self.ROWS, self.COLS), dtype=torch.float32, device=device)
+        state = torch.zeros((1, 3, self.ROWS, self.COLS), dtype=torch.float32, device=device)
         for r in range(self.ROWS):
             for c in range(self.COLS):
                 if self.grid[r][c] == 1:
                     state[0, 0, r, c] = 1.0
                 elif self.grid[r][c] == 2:
                     state[0, 1, r, c] = 1.0
+        # 1.0 when it's player 1 to move next, 0.0 when it's player 2.
+        turn_value = 1.0 if self.turn % 2 == 0 else 0.0
+        state[0, 2, :, :] = turn_value
         return state
 
 
