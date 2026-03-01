@@ -215,7 +215,6 @@ class ConnectFourGUI:
             self.mode_var,
             "Human vs AI",
             "Human vs Human",
-            "AI vs AI",
             command=lambda _value: self.on_mode_change(),
         )
         mode_menu.grid(row=0, column=1, sticky="w")
@@ -351,8 +350,6 @@ class ConnectFourGUI:
         model_name = self.model_display_name()
         if mode == "Human vs Human":
             text = "Player 1: Human | Player 2: Human"
-        elif mode == "AI vs AI":
-            text = f"Player 1: CPU ({model_name}) | Player 2: CPU ({model_name})"
         elif self.human_side_var.get().startswith("Second"):
             text = f"Player 1: CPU ({model_name}) | Player 2: Human"
         else:
@@ -399,8 +396,6 @@ class ConnectFourGUI:
 
     def is_ai_turn(self) -> bool:
         mode = self.mode_var.get()
-        if mode == "AI vs AI":
-            return True
         if mode == "Human vs AI":
             if self.human_side_var.get().startswith("Second"):
                 return self.current_player == 1
