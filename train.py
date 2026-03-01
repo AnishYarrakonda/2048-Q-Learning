@@ -339,58 +339,66 @@ def play_game(
     loss_reward: float = -1.0,
     viewer: TrainingTkViewer | None = None,
     episode: int = 0,
+    force_zero_epsilon: bool = False,
 ) -> tuple[int, int]:
     board = Board()
     done = False
     winner = 0
     last_move_by_player: dict[int, tuple[torch.Tensor, int]] = {}
+    original_epsilon = agent.epsilon
+    if force_zero_epsilon:
+        agent.epsilon = 0.0
 
-    while not done:
-        valid_moves = board.valid_moves()
-        if not valid_moves:
-            winner = 0
-            break
+    try:
+        while not done:
+            valid_moves = board.valid_moves()
+            if not valid_moves:
+                winner = 0
+                break
 
-        acting_player = 1 if board.turn % 2 == 0 else 2
-        state = Board.board_to_tensor(board=board)
-        action = agent.select_action(board=board, valid_moves=valid_moves)
+            acting_player = 1 if board.turn % 2 == 0 else 2
+            state = Board.board_to_tensor(board=board)
+            action = agent.select_action(board=board, valid_moves=valid_moves)
 
-        row = board.make_move(action)
-        if row is None:
-            done = True
-            winner = 2 if acting_player == 1 else 1
+            row = board.make_move(action)
+            if row is None:
+                done = True
+                winner = 2 if acting_player == 1 else 1
+                if train:
+                    next_state = Board.board_to_tensor(board=board)
+                    agent.train_step(state, action, loss_reward, next_state, done)
+                break
+
+            done, winner = board.game_over(row, action)
+
+            if watch_game and viewer is not None:
+                viewer.render(board=board, episode=episode, done=done, winner=winner)
+
             if train:
+                reward = 0.0
+                if done and winner == acting_player:
+                    reward = win_reward
+                elif done and winner != 0:
+                    reward = loss_reward
                 next_state = Board.board_to_tensor(board=board)
-                agent.train_step(state, action, loss_reward, next_state, done)
-            break
+                agent.train_step(state, action, reward, next_state, done)
+                last_move_by_player[acting_player] = (state.detach().clone(), action)
 
-        done, winner = board.game_over(row, action)
-
-        if watch_game and viewer is not None:
-            viewer.render(board=board, episode=episode, done=done, winner=winner)
-
-        if train:
-            reward = 0.0
-            if done and winner == acting_player:
-                reward = win_reward
-            elif done and winner != 0:
-                reward = loss_reward
-            next_state = Board.board_to_tensor(board=board)
-            agent.train_step(state, action, reward, next_state, done)
-            last_move_by_player[acting_player] = (state.detach().clone(), action)
-
-            # Ensure the losing player's most recent move gets a terminal loss update.
-            if done and winner in (1, 2):
-                loser = 2 if winner == 1 else 1
-                if loser in last_move_by_player:
-                    loser_state, loser_action = last_move_by_player[loser]
-                    agent.train_step(
-                        loser_state,
-                        loser_action,
-                        loss_reward,
-                        next_state,
-                        True,
-                    )
+                # Ensure the losing player's most recent move gets a terminal loss update.
+                if done and winner in (1, 2):
+                    loser = 2 if winner == 1 else 1
+                    if loser in last_move_by_player:
+                        loser_state, loser_action = last_move_by_player[loser]
+                        agent.train_step(
+                            loser_state,
+                            loser_action,
+                            loss_reward,
+                            next_state,
+                            True,
+                        )
+    finally:
+        if force_zero_epsilon:
+            agent.epsilon = original_epsilon
 
     return winner, board.turn
 
@@ -644,14 +652,30 @@ def run_training(config: Config) -> None:
         winner, game_length = play_game(
             agent=agent,
             train=config["train"],
-            watch_game=render_this_episode,
+            watch_game=False,
             watch_steps=config["watch_steps"],
             watch_delay=config["watch_delay"],
             win_reward=config["win_reward"],
             loss_reward=config["loss_reward"],
-            viewer=viewer,
+            viewer=None,
             episode=episode,
+            force_zero_epsilon=False,
         )
+
+        # Visualization-only rollout (not part of training/stats): greedy policy, no updates.
+        if render_this_episode and viewer is not None:
+            play_game(
+                agent=agent,
+                train=False,
+                watch_game=True,
+                watch_steps=config["watch_steps"],
+                watch_delay=config["watch_delay"],
+                win_reward=config["win_reward"],
+                loss_reward=config["loss_reward"],
+                viewer=viewer,
+                episode=episode,
+                force_zero_epsilon=True,
+            )
         winners.append(winner)
         game_lengths.append(game_length)
         episodes.append(episode)
