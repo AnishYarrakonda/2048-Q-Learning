@@ -2,7 +2,7 @@
 train.py — curriculum DQN, rolling-window promotion (no separate eval).
 
 Promotion: after every 250-game window, if the agent won >= 60% of those
-games (>= 150/250) it advances to the next MCTS stage.
+games (>= 150/250) it advances to the next Minimax depth.
 Stats and promotion check happen together at the same print interval.
 """
 
@@ -14,7 +14,7 @@ import torch
 
 from board import Board
 from agent import DQNAgent
-from mcts import MCTSOpponent, FastBoard
+from minimax import MinimaxOpponent as MCTSOpponent, FastBoard
 
 # ---------------------------------------------------------------------------
 # Config
@@ -27,8 +27,8 @@ SAVE_INTERVAL   = 5_000
 WINDOW          = 250             # print + promotion check every N episodes
 
 # Curriculum
-MAX_MCTS_DEPTH  = 6
-MCTS_SIMS       = 20
+MAX_MCTS_DEPTH  = 5   # depth goes 1..6 (stage+1)
+
 
 # Promotion — 60% wins in the last WINDOW games (epsilon-inclusive)
 PROMOTE_THRESHOLD = 0.60          # 150 / 250
@@ -131,7 +131,7 @@ def save_checkpoint(agent: DQNAgent, episode: int, stage: int) -> str:
 
 def run_training() -> None:
     win_threshold = int(PROMOTE_THRESHOLD * WINDOW)   # 150
-    print(f"Curriculum DQN — {NUM_EPISODES} episodes | MCTS depth 0→{MAX_MCTS_DEPTH}")
+    print(f"Curriculum DQN — {NUM_EPISODES} episodes | Minimax depth 1→6")
     print(f"Promotion: {win_threshold}/{WINDOW} wins in rolling window (ε-inclusive)\n")
 
     agent = DQNAgent(
@@ -146,7 +146,7 @@ def run_training() -> None:
         print(f"Resumed from {RESUME_PATH}")
 
     stage    = 0
-    opponent = MCTSOpponent(depth=stage, n_simulations=MCTS_SIMS)
+    opponent = MinimaxOpponent(depth=stage + 1)
 
     w_wins = w_losses = w_draws = 0
     game_lengths = []
@@ -172,11 +172,11 @@ def run_training() -> None:
             if promote:
                 save_checkpoint(agent, ep, stage)
                 stage   += 1
-                opponent = MCTSOpponent(depth=stage, n_simulations=MCTS_SIMS)
-                promo_str = f" {ANSI.GREEN}→ PROMOTED Stage {stage}{ANSI.RESET}"
+                opponent = MinimaxOpponent(depth=stage + 1)
+                promo_str = f" {ANSI.GREEN}→ PROMOTED depth {stage + 1}{ANSI.RESET}"
 
             print(
-                f"Ep {ep:>6} | Stage {ANSI.CYAN}{stage - (1 if promote else 0)}{ANSI.RESET} | "
+                f"Ep {ep:>6} | Depth {ANSI.CYAN}{(stage - (1 if promote else 0)) + 1}{ANSI.RESET} | "
                 f"W {ANSI.GREEN}{w_wins}{ANSI.RESET} "
                 f"L {ANSI.RED}{w_losses}{ANSI.RESET} "
                 f"D {ANSI.CYAN}{w_draws}{ANSI.RESET} "
