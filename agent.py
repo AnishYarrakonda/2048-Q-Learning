@@ -76,7 +76,7 @@ def encode(flat: np.ndarray) -> np.ndarray:
 
 
 # ─────────────────────────────── network ──────────────────────────────────────
-class TwentyFortyEightNet(nn.Module):
+class TwoZeroFourEightNet(nn.Module):
     """
     Three stacked 2×2 convolutions → fully connected head.
 
@@ -161,13 +161,14 @@ class ReplayBuffer:
 
     def sample(self, batch: int):
         idx = np.random.randint(0, self.size, batch)
-        return (
-            torch.from_numpy(self.states[idx]),
-            torch.from_numpy(self.actions[idx]),
-            torch.from_numpy(self.rewards[idx]),
-            torch.from_numpy(self.nstates[idx]),
-            torch.from_numpy(self.dones[idx]),
-        )
+        # Convert sampled numpy slices to CPU tensors and move to DEVICE in one step
+        # This avoids repeated .to(DEVICE) calls in the training loop.
+        s = torch.from_numpy(self.states[idx]).to(DEVICE)
+        a = torch.from_numpy(self.actions[idx]).to(DEVICE)
+        r = torch.from_numpy(self.rewards[idx]).to(DEVICE)
+        ns = torch.from_numpy(self.nstates[idx]).to(DEVICE)
+        d = torch.from_numpy(self.dones[idx]).to(DEVICE)
+        return s, a, r, ns, d
 
     def __len__(self) -> int:
         return self.size
@@ -206,8 +207,8 @@ class DQNAgent:
         self.warmup      = warmup
         self.grad_steps  = 0
 
-        self.policy = TwentyFortyEightNet().to(DEVICE)
-        self.target = TwentyFortyEightNet().to(DEVICE)
+        self.policy = TwoZeroFourEightNet().to(DEVICE)
+        self.target = TwoZeroFourEightNet().to(DEVICE)
         self.target.load_state_dict(self.policy.state_dict())
         self.target.eval()
 
@@ -245,11 +246,6 @@ class DQNAgent:
             return None
 
         s, a, r, ns, done = self.buffer.sample(self.batch_size)
-        s    = s.to(DEVICE)
-        ns   = ns.to(DEVICE)
-        a    = a.to(DEVICE)
-        r    = r.to(DEVICE)
-        done = done.to(DEVICE)
 
         # ── Double DQN ─────────────────────────────────────────────────────
         # Policy net picks the *action*, target net evaluates its *value*.
@@ -273,7 +269,8 @@ class DQNAgent:
             self.target.load_state_dict(self.policy.state_dict())
 
         self.eps = max(self.eps_end, self.eps * self.eps_decay)
-        self.last_loss = float(loss)
+        # detach before converting to Python scalar to avoid autograd warnings
+        self.last_loss = float(loss.detach().item())
         return self.last_loss
 
     # ── episode runner ─────────────────────────────────────────────────────────
@@ -399,7 +396,7 @@ def train(
     """
     print(f"Device: {DEVICE}")
     print(f"Network parameters: "
-          f"{sum(p.numel() for p in TwentyFortyEightNet().parameters()):,}")
+          f"{sum(p.numel() for p in TwoZeroFourEightNet().parameters()):,}")
     print()
 
     agent = DQNAgent()

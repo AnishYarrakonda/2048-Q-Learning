@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from agent import DQNAgent, TwentyFortyEightNet, DEVICE
+from agent import DQNAgent, TwoZeroFourEightNet, DEVICE
 
 # ─────────────────────────────── ANSI palette ─────────────────────────────────
 _ESC = "\033["
@@ -83,7 +83,7 @@ _COL_SEP = dim("  │  ")
 HEADER = (
     bcyan(f"{'EPISODE':>10}")
     + _COL_SEP
-    + bwhite(f"{'AVG SCORE':>9}")
+    + byellow(f"{'AVG SCORE':>9}")
     + "  "
     + bwhite(f"{'MAX SCORE':>9}")
     + _COL_SEP
@@ -95,9 +95,11 @@ HEADER = (
     + _COL_SEP
     + bmagenta(f"{'ε':>7}")
     + _COL_SEP
-    + dim(f"{'BUFFER':>8}")
+    + dim(f"{'BUF':>8}")
     + _COL_SEP
     + dim(f"{'LOSS':>8}")
+    + _COL_SEP
+    + bgreen(f"{'TIME':>8}")
 )
 
 _DIVIDER = dim("─" * 110)
@@ -112,6 +114,7 @@ def _fmt_row(
     eps:    float,
     buf:    int,
     loss:   float,
+    elapsed_s: float = 0.0,
 ) -> str:
     ep_str  = cyan(f"{ep_lo:>6,}") + dim("-") + cyan(f"{ep_hi:<6,}")
     avg_sc  = _score_color(np.mean(scores)) # type: ignore
@@ -122,6 +125,7 @@ def _fmt_row(
     eps_str = magenta(f"{eps:>7.4f}")
     buf_str = dim(f"{buf:>8,}")
     loss_s  = dim(f"{loss:>8.4f}") if loss else dim(f"{'—':>8}")
+    time_s  = bgreen(f"{elapsed_s:>8.2f}s")
     return (
         f"  {ep_str}"
         + _COL_SEP
@@ -138,6 +142,8 @@ def _fmt_row(
         + buf_str
         + _COL_SEP
         + loss_s
+        + _COL_SEP
+        + time_s
     )
 
 
@@ -200,7 +206,7 @@ def train(
     print(bwhite("  │") + bcyan("         2048  ·  Deep Q-Network  Trainer           ") + bwhite(" │"))
     print(bwhite("  └─────────────────────────────────────────────────────┘"))
     print(f"  device      : {bgreen(str(DEVICE))}")
-    net_params = sum(p.numel() for p in TwentyFortyEightNet().parameters())
+    net_params = sum(p.numel() for p in TwoZeroFourEightNet().parameters())
     print(f"  parameters  : {bgreen(f'{net_params:,}')}")
     print(f"  episodes    : {bgreen(str(n_episodes))}")
     print(f"  models dir  : {bgreen(models_dir)}/")
@@ -228,6 +234,7 @@ def train(
 
     row_count   = 0
     t_train_start = time.perf_counter()
+    t_window_start = time.perf_counter()
 
     # ── graceful Ctrl-C ─────────────────────────────────────────────────────
     interrupted = False
@@ -260,6 +267,7 @@ def train(
                 print(HEADER)
                 print(_DIVIDER)
 
+            elapsed_window = time.perf_counter() - t_window_start
             print(_fmt_row(
                 ep_lo   = w_start_ep,
                 ep_hi   = ep,
@@ -269,6 +277,7 @@ def train(
                 eps     = agent.eps,
                 buf     = len(agent.buffer),
                 loss    = float(np.mean(w_losses)) if w_losses else 0.0,
+                elapsed_s = elapsed_window,
             ))
             row_count   += 1
             w_start_ep   = ep + 1
@@ -276,6 +285,7 @@ def train(
             w_moves.clear()
             w_tiles.clear()
             w_losses.clear()
+            t_window_start = time.perf_counter()
 
         # ── eval ──────────────────────────────────────────────────────────
         if ep % eval_every == 0:
