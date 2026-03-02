@@ -131,7 +131,7 @@ HEADER_LINE = (
 # Width of the visible text in HEADER_LINE (sum of col widths + separators)
 # Used to draw the divider line at the same length.
 _HEADER_VISIBLE_W = 14 + 9 + 9 + 9 + 5 + 1 + 5 + 7 + 8 + 8 + 8 + (9 * 3)  # 3-char seps
-DIVIDER = dim("─" * 107)
+DIVIDER = dim("─" * 114)
 
 
 def _fmt_row(
