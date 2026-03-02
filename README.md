@@ -67,10 +67,3 @@ Files to inspect
 License & Attribution
 ---------------------
 This project is provided as-is for experimentation and learning. Add a license file if you share or redistribute.
-
-Questions or next steps
-----------------------
-If you want, I can:
-- Add CLI flags to expose `death_k` and `death_back`.
-- Add a `requirements.txt` and a short benchmark script that simulates many games headless to measure throughput.
-- Run a short training/eval to verify behavior on your machine.
