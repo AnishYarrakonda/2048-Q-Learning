@@ -331,7 +331,13 @@ def run_training() -> None:
         # Load checkpoint payload to recover curriculum depth, then load weights
         ckpt = torch.load(resume_path, map_location="cpu")
         agent.load(resume_path)
-        current_depth = int(ckpt.get("current_depth", 0))
+        # Prefer explicit payload key (new checkpoints). If missing, parse from filename (old checkpoints).
+        if isinstance(ckpt, dict) and "current_depth" in ckpt:
+            current_depth = int(ckpt["current_depth"])
+        else:
+            import re
+            match = re.search(r"_depth(\d+)\.pth$", resume_path)
+            current_depth = int(match.group(1)) if match else 0
         opponent = MinimaxOpponent(depth=current_depth)
         print(f"Resumed from {resume_path} at depth {current_depth}")
 

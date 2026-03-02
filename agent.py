@@ -200,7 +200,7 @@ class PrioritizedReplayBuffer:
         if max_p == 0:
             max_p = 1.0
         data = (state.detach().cpu(), action, float(reward), next_state.detach().cpu(), bool(done))
-        self.tree.add(max_p, data)
+        self.tree.add(max_p, data) # type: ignore
 
     def sample(self, batch_size: int, beta: float = 0.4):
         N = self.tree.n_entries
@@ -364,7 +364,7 @@ class DQNAgent:
         with torch.no_grad():
             td_errors = (target - q_values).abs().detach().cpu().numpy()
         # idxs are tree indices; update with td_errors
-        self.buffer.update_priorities(idxs, td_errors)
+        self.buffer.update_priorities(idxs, td_errors) # type: ignore
 
         self.steps_done += 1
 
