@@ -5,7 +5,7 @@ import torch.optim as optim
 import numpy as np
 import random
 from collections import deque
-from typing import Optional
+from typing import Optional, Tuple, List
 
 from board import Board, device
 
@@ -128,28 +128,140 @@ class ConnectFourNet(nn.Module):
 # Replay Buffer
 # ---------------------------------------------------------------------------
 
-class ReplayBuffer:
-    """Stores (state, action, reward, next_state, done) on CPU; batch → device on sample."""
+class SumTree:
+    """SumTree for prioritized sampling. Stores priorities in a binary tree."""
 
-    def __init__(self, capacity: int = 50_000):
-        self.buffer: deque = deque(maxlen=capacity)
+    def __init__(self, capacity: int):
+        self.capacity = int(capacity)
+        self.tree = np.zeros(2 * self.capacity - 1, dtype=np.float32)
+        self.data = [None] * self.capacity
+        self.write = 0
+        self.n_entries = 0
 
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+    def _propagate(self, idx: int, change: float) -> None:
+        parent = (idx - 1) // 2
+        self.tree[parent] += change
+        if parent != 0:
+            self._propagate(parent, change)
 
-    def sample(self, batch_size: int):
-        batch = random.sample(self.buffer, batch_size)
+    def _retrieve(self, idx: int, s: float) -> int:
+        left = 2 * idx + 1
+        right = left + 1
+        if left >= len(self.tree):
+            return idx
+        if s <= self.tree[left]:
+            return self._retrieve(left, s)
+        else:
+            return self._retrieve(right, s - self.tree[left])
+
+    def total(self) -> float:
+        return float(self.tree[0])
+
+    def add(self, p: float, data_item) -> int:
+        idx = self.write + self.capacity - 1
+        self.data[self.write] = data_item
+        self.update(idx, p)
+        self.write += 1
+        if self.write >= self.capacity:
+            self.write = 0
+        if self.n_entries < self.capacity:
+            self.n_entries += 1
+        return idx
+
+    def update(self, idx: int, p: float) -> None:
+        change = p - self.tree[idx]
+        self.tree[idx] = p
+        self._propagate(idx, change)
+
+    def get(self, s: float):
+        idx = self._retrieve(0, s)
+        data_idx = idx - (self.capacity - 1)
+        return idx, self.tree[idx], self.data[data_idx]
+
+
+class PrioritizedReplayBuffer:
+    """Sum-tree based Prioritized Experience Replay (PER).
+
+    Stores tuples (state, action, reward, next_state, done) and samples by priority.
+    """
+
+    def __init__(self, capacity: int = 100_000, alpha: float = 0.6, eps: float = 1e-6):
+        self.capacity = int(capacity)
+        self.alpha = alpha
+        self.eps = eps
+        self.tree = SumTree(self.capacity)
+
+    def __len__(self) -> int:
+        return int(self.tree.n_entries)
+
+    def push(self, state: torch.Tensor, action: int, reward: float, next_state: torch.Tensor, done: bool) -> None:
+        # New priorities get max priority so they are likely to be sampled
+        max_p = np.max(self.tree.tree[-self.tree.capacity:]) if self.tree.n_entries > 0 else 1.0
+        if max_p == 0:
+            max_p = 1.0
+        data = (state.detach().cpu(), action, float(reward), next_state.detach().cpu(), bool(done))
+        self.tree.add(max_p, data)
+
+    def sample(self, batch_size: int, beta: float = 0.4):
+        N = self.tree.n_entries
+        if N == 0:
+            raise ValueError("Trying to sample from empty buffer")
+
+        batch = []
+        idxs = np.empty(batch_size, dtype=np.int32)
+        ps = np.empty(batch_size, dtype=np.float32)
+
+        total = self.tree.total()
+        # If total is zero (unexpected), fallback to uniform sampling over filled entries
+        if total <= 0.0:
+            choices = np.random.randint(0, N, size=batch_size)
+            for i, di in enumerate(choices):
+                tree_idx = int(di + self.tree.capacity - 1)
+                p = float(self.tree.tree[tree_idx])
+                data = self.tree.data[di]
+                idxs[i] = tree_idx
+                ps[i] = p
+                batch.append(data)
+        else:
+            segment = total / batch_size
+            for i in range(batch_size):
+                a = segment * i
+                b = segment * (i + 1)
+                s = random.uniform(a, b)
+                idx, p, data = self.tree.get(s)
+                # If data is None for some reason, fallback to a random filled slot
+                if data is None:
+                    di = random.randint(0, N - 1)
+                    idx = int(di + self.tree.capacity - 1)
+                    p = float(self.tree.tree[idx])
+                    data = self.tree.data[di]
+                idxs[i] = int(idx)
+                ps[i] = float(p)
+                batch.append(data)
+
+        # normalize probabilities and compute importance-sampling weights
+        probs = ps / (self.tree.total() + 1e-12)
+        probs = np.clip(probs, 1e-12, None)
+        weights = (N * probs) ** (-beta)
+        weights = weights / (weights.max() + 1e-12)
+
         states, actions, rewards, next_states, dones = zip(*batch)
+
         return (
             torch.cat(states).to(device),
-            torch.tensor(actions,  dtype=torch.long,    device=device),
-            torch.tensor(rewards,  dtype=torch.float32, device=device),
+            torch.tensor(actions, dtype=torch.long, device=device),
+            torch.tensor(rewards, dtype=torch.float32, device=device),
             torch.cat(next_states).to(device),
-            torch.tensor(dones,    dtype=torch.float32, device=device),
+            torch.tensor(dones, dtype=torch.float32, device=device),
+            idxs,
+            torch.tensor(weights, dtype=torch.float32, device=device),
         )
 
-    def __len__(self):
-        return len(self.buffer)
+    def update_priorities(self, idxs: List[int], td_errors: np.ndarray) -> None:
+        # td_errors: array-like of size len(idxs)
+        for idx, err in zip(idxs, td_errors):
+            p = (abs(float(err)) + self.eps) ** self.alpha
+            self.tree.update(int(idx), float(p))
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +278,10 @@ class DQNAgent:
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.05,
         epsilon_decay: int = 10_000,
-        buffer_capacity: int = 60_000,
+        buffer_capacity: int = 100_000,
+        per_alpha: float = 0.6,
+        per_beta_start: float = 0.4,
+        per_beta_frames: int = 100_000,
     ):
         self.gamma               = gamma
         self.batch_size          = batch_size
@@ -175,6 +290,13 @@ class DQNAgent:
         self.epsilon_end         = epsilon_end
         self.epsilon_decay       = epsilon_decay
         self.steps_done          = 0
+        # PER parameters
+        self.per_alpha = per_alpha
+        self.per_beta_start = per_beta_start
+        self.per_beta_frames = per_beta_frames
+
+        # Epsilon bump (promotion reset) tracking
+        self._epsilon_bump = None  # dict with keys start_value, decay_steps, start_step
 
         self.policy_net = ConnectFourNet().to(device)
         self.target_net = ConnectFourNet().to(device)
@@ -182,12 +304,24 @@ class DQNAgent:
         self.target_net.eval()
 
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr, weight_decay=1e-5)
-        self.buffer    = ReplayBuffer(buffer_capacity)
+        self.buffer    = PrioritizedReplayBuffer(buffer_capacity, alpha=self.per_alpha)
 
     @property
     def epsilon(self) -> float:
-        e = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-            np.exp(-self.steps_done / self.epsilon_decay)
+        # If an epsilon bump is active, use that schedule for the specified decay window.
+        if self._epsilon_bump is not None:
+            start_value = self._epsilon_bump["start_value"]
+            decay_steps = self._epsilon_bump["decay_steps"]
+            start_step = self._epsilon_bump["start_step"]
+            elapsed = max(0, self.steps_done - start_step)
+            if elapsed <= decay_steps:
+                e = self.epsilon_end + (start_value - self.epsilon_end) * np.exp(-elapsed / decay_steps)
+                return float(e)
+            else:
+                # bump finished
+                self._epsilon_bump = None
+
+        e = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * np.exp(-self.steps_done / self.epsilon_decay)
         return float(e)
 
     def select_action(self, board: Board) -> int:
@@ -200,7 +334,10 @@ class DQNAgent:
         if len(self.buffer) < self.batch_size:
             return None
 
-        states, actions, rewards, next_states, dones = self.buffer.sample(self.batch_size)
+        # Beta annealing
+        beta = self.per_beta_start + (1.0 - self.per_beta_start) * min(1.0, self.steps_done / max(1, self.per_beta_frames))
+
+        states, actions, rewards, next_states, dones, idxs, is_weights = self.buffer.sample(self.batch_size, beta=beta)
 
         s  = states.view(-1, 2, Board.ROWS, Board.COLS)
         ns = next_states.view(-1, 2, Board.ROWS, Board.COLS)
@@ -214,19 +351,27 @@ class DQNAgent:
             next_q = self.target_net(ns).gather(1, next_actions).squeeze(1)
             target = rewards + self.gamma * next_q * (1.0 - dones)
 
-        loss = F.smooth_l1_loss(q_values, target)
+        # element-wise loss
+        elementwise_loss = F.smooth_l1_loss(q_values, target, reduction='none')
+        loss = (is_weights * elementwise_loss).mean()
 
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
         self.optimizer.step()
 
+        # update priorities
+        with torch.no_grad():
+            td_errors = (target - q_values).abs().detach().cpu().numpy()
+        # idxs are tree indices; update with td_errors
+        self.buffer.update_priorities(idxs, td_errors)
+
         self.steps_done += 1
 
         if self.steps_done % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
 
-        return loss.item()
+        return float(loss.item())
 
     def save(self, path: str = "agent.pth"):
         torch.save({
@@ -244,6 +389,14 @@ class DQNAgent:
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.steps_done = ckpt.get("steps_done", 0)
         print(f"[Agent] Loaded ← {path}  (step {self.steps_done})")
+
+    def start_epsilon_bump(self, start_value: float = 0.25, decay_steps: int = 2000) -> None:
+        """Temporarily bump epsilon to `start_value` and decay it back to `epsilon_end` over `decay_steps` learn steps."""
+        self._epsilon_bump = {
+            "start_value": float(start_value),
+            "decay_steps": int(decay_steps),
+            "start_step": int(self.steps_done),
+        }
 
 
 if __name__ == "__main__":

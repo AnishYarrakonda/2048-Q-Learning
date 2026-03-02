@@ -45,7 +45,8 @@ EVAL_RAND_MAX       = 8
 LR              = 1e-3
 GAMMA           = 0.99
 BATCH_SIZE      = 64
-BUFFER_CAPACITY = 30_000
+BUFFER_CAPACITY = 100_000
+LEARN_EVERY = 4
 TARGET_UPDATE   = 200
 EPS_START       = 1.0
 EPS_END         = 0.05
@@ -213,7 +214,7 @@ def play_episode(agent: DQNAgent, opponent: MinimaxOpponent,
 
     for t in trajectory:
         agent.buffer.push(*t)
-    agent.learn()
+    # Learning is now performed externally every LEARN_EVERY episodes.
 
     return winner, fb.turn
 
@@ -273,8 +274,30 @@ def run_eval(agent: DQNAgent, opponent: MinimaxOpponent) -> tuple[int, int, int]
 def save_checkpoint(agent: DQNAgent, episode: int, depth: int) -> str:
     os.makedirs(SAVE_DIR, exist_ok=True)
     path = os.path.join(SAVE_DIR, f"{RUN_NAME}_ep{episode}_depth{depth}.pth")
-    agent.save(path)
+    # Save model + optimizer + step counter + current curriculum depth
+    torch.save({
+        "policy_net": agent.policy_net.state_dict(),
+        "target_net": agent.target_net.state_dict(),
+        "optimizer": agent.optimizer.state_dict(),
+        "steps_done": agent.steps_done,
+        "current_depth": int(depth),
+    }, path)
+    print(f"[Agent] Saved → {path}")
     return path
+
+
+def find_latest_checkpoint(save_dir: str) -> str | None:
+    """Return the newest .pt/.pth checkpoint path in `save_dir`, or None if none found."""
+    if not os.path.isdir(save_dir):
+        return None
+    candidates = []
+    for name in os.listdir(save_dir):
+        if name.endswith(".pt") or name.endswith(".pth"):
+            candidates.append(os.path.join(save_dir, name))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return candidates[0]
 
 
 # ---------------------------------------------------------------------------
@@ -296,9 +319,21 @@ def run_training() -> None:
         buffer_capacity=BUFFER_CAPACITY,
     )
 
-    if RESUME_PATH and os.path.exists(RESUME_PATH):
-        agent.load(RESUME_PATH)
-        print(f"Resumed from {RESUME_PATH}")
+    # Resume from explicit path, or if none provided, attempt to load the
+    # latest checkpoint found in `SAVE_DIR` for convenience.
+    resume_path = RESUME_PATH
+    if not resume_path:
+        latest = find_latest_checkpoint(SAVE_DIR)
+        if latest:
+            resume_path = latest
+            print(f"Auto-resume: found latest checkpoint {resume_path}")
+    if resume_path and os.path.exists(resume_path):
+        # Load checkpoint payload to recover curriculum depth, then load weights
+        ckpt = torch.load(resume_path, map_location="cpu")
+        agent.load(resume_path)
+        current_depth = int(ckpt.get("current_depth", 0))
+        opponent = MinimaxOpponent(depth=current_depth)
+        print(f"Resumed from {resume_path} at depth {current_depth}")
 
     w_wins = w_losses = w_draws = 0
     game_lengths = []
@@ -351,10 +386,20 @@ def run_training() -> None:
                 current_depth += 1
                 opponent       = MinimaxOpponent(depth=current_depth)
                 game_lengths.clear()
+                # Promotion reset: bump exploration so buffer refills with diverse
+                # experiences against the new opponent before going greedy.
+                try:
+                    agent.start_epsilon_bump(0.25, decay_steps=2000)
+                except Exception:
+                    pass
                 print()
 
         if ep % SAVE_INTERVAL == 0:
             print(f"  → Checkpoint: {save_checkpoint(agent, ep, current_depth)}")
+
+        # Perform learning less frequently to reduce catastrophic forgetting
+        if ep % LEARN_EVERY == 0:
+            _ = agent.learn()
 
     agent.save(os.path.join(SAVE_DIR, f"{RUN_NAME}_final.pth"))
     print(f"\nDone. {time.perf_counter()-t0:.1f}s")
