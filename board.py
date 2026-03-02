@@ -150,7 +150,7 @@ class Board:
         if np.any(self.board == 0):
             return True
         g = self.board.reshape(4, 4)
-        return (np.any(g[:, :-1] == g[:, 1:]) or
+        return (np.any(g[:, :-1] == g[:, 1:]) or # type: ignore
                 np.any(g[:-1, :] == g[1:, :]))
 
     def reset(self):

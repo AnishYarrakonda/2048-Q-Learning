@@ -43,10 +43,13 @@ import tkinter as tk
 from board import Board
 
 # ─────────────────────────────── layout ───────────────────────────────────────
-CELL    = 120
-PAD     = 16
-W       = 4 * CELL + 5 * PAD     # board canvas side = 536
-SIDE_W  = 272                     # sidebar width
+SCALE = 1.25
+
+CELL    = int(120 * SCALE)
+PAD     = int(16  * SCALE)
+# remove the extra +50 gap and compute board side exactly from cells/padding
+W       = 4 * CELL + 5 * PAD
+SIDE_W  = int(272 * SCALE)        # sidebar width
 
 # ─────────────────────────────── timing ───────────────────────────────────────
 SLIDE_MS = 100
@@ -84,10 +87,11 @@ def _tile_bg(v):  return TILE_BG.get(v, "#3c3a32")
 def _tile_fg(v):  return TILE_FG.get(v, FG_LIGHT)
 
 def _font_size(v):
-    if v <   100: return 56
-    if v <  1000: return 44
-    if v < 10000: return 32
-    return 26
+    if v <   100: base = 56
+    elif v <  1000: base = 44
+    elif v < 10000: base = 32
+    else: base = 26
+    return max(8, int(base * SCALE))
 
 def _cell_center(r, c):
     return PAD + c*(CELL+PAD) + CELL//2,  PAD + r*(CELL+PAD) + CELL//2
@@ -106,13 +110,13 @@ def _spawn_s(t):
 
 
 # ─────────────────────────────── styled button helper ─────────────────────────
-def _btn(parent, text, command, bg=C_BTN, fg="white", font_size=12, pady=7):
+def _btn(parent, text, command, bg=C_BTN, fg="white", font_size=int(12*SCALE), pady=int(7*SCALE)):
     b = tk.Button(
         parent, text=text, command=command,
         bg=bg, fg=fg, activebackground=C_BTN_H, activeforeground="white",
         font=("Helvetica", font_size, "bold"),
         relief="flat", bd=0, cursor="hand2",
-        padx=12, pady=pady,
+        padx=int(12*SCALE), pady=pady,
     )
     b.bind("<Enter>", lambda e, b=b, bg=bg: b.config(bg=C_BTN_H))
     b.bind("<Leave>", lambda e, b=b, bg=bg: b.config(bg=bg))
@@ -148,11 +152,11 @@ class GUI:
         self.root.resizable(False, False)
 
         outer = tk.Frame(self.root, bg=C_WIN)
-        outer.pack(padx=14, pady=14)
+        outer.pack(padx=int(14*SCALE), pady=int(14*SCALE))
 
         # sidebar
         self._side = tk.Frame(outer, bg=C_SIDE, width=SIDE_W)
-        self._side.pack(side="left", fill="y", padx=(0, 14))
+        self._side.pack(side="left", fill="y", padx=(0, int(14*SCALE)))
         self._side.pack_propagate(False)
 
         # board canvas
@@ -179,29 +183,29 @@ class GUI:
     # ─────────────────────────────── sidebar ──────────────────────────────────
     def _build_sidebar(self):
         s   = self._side
-        pad = dict(padx=16)
+        pad = dict(padx=int(16*SCALE))
 
         tk.Label(s, text="2048",
-                 font=("Helvetica Neue", 58, "bold"),
+                 font=("Helvetica Neue", int(58*SCALE), "bold"),
                  fg=FG_DARK, bg=C_SIDE
-                 ).pack(anchor="w", **pad, pady=(18, 0))
+                 ).pack(anchor="w", **pad, pady=(int(18*SCALE), 0)) # type: ignore
 
         tk.Label(s, text="Join the tiles, get to 2048!",
-                 font=("Helvetica", 10), fg=FG_MED, bg=C_SIDE,
+                 font=("Helvetica", int(10*SCALE)), fg=FG_MED, bg=C_SIDE,
                  wraplength=SIDE_W-32
-                 ).pack(anchor="w", **pad, pady=(0, 12))
+                 ).pack(anchor="w", **pad, pady=(0, int(12*SCALE))) # type: ignore
 
         # score boxes
         row = tk.Frame(s, bg=C_SIDE)
-        row.pack(fill="x", **pad)
+        row.pack(fill="x", **pad) # type: ignore
 
         def _score_box(parent, label):
-            f = tk.Frame(parent, bg=C_GRID, padx=14, pady=8)
-            f.pack(side="left", expand=True, fill="x", padx=(0,6))
-            tk.Label(f, text=label, font=("Helvetica", 10, "bold"),
+            f = tk.Frame(parent, bg=C_GRID, padx=int(14*SCALE), pady=int(8*SCALE))
+            f.pack(side="left", expand=True, fill="x", padx=(0,int(6*SCALE)))
+            tk.Label(f, text=label, font=("Helvetica", int(10*SCALE), "bold"),
                      fg="#eee4da", bg=C_GRID).pack()
             var = tk.StringVar(value="0")
-            tk.Label(f, textvariable=var, font=("Helvetica", 22, "bold"),
+            tk.Label(f, textvariable=var, font=("Helvetica", int(22*SCALE), "bold"),
                      fg="white", bg=C_GRID).pack()
             return var
 
@@ -210,7 +214,7 @@ class GUI:
 
         # live stats panel
         stats_f = tk.Frame(s, bg=C_PANEL, padx=14, pady=10)
-        stats_f.pack(fill="x", **pad, pady=(14, 0))
+        stats_f.pack(fill="x", **pad, pady=(14, 0)) # type: ignore
 
         def _stat_row(parent, label):
             r2 = tk.Frame(parent, bg=C_PANEL)
@@ -227,7 +231,7 @@ class GUI:
 
         def _divider(label=""):
             f2 = tk.Frame(s, bg=C_SIDE)
-            f2.pack(fill="x", **pad, pady=(16, 6))
+            f2.pack(fill="x", **pad, pady=(16, 6)) # type: ignore
             if label:
                 tk.Label(f2, text=f"── {label} ──",
                          font=("Helvetica", 9, "bold"),
@@ -238,18 +242,18 @@ class GUI:
         _divider("AI CONTROL")
 
         _btn(s, "⊕  Load Model", self._load_model_dialog,
-             font_size=11).pack(fill="x", **pad)
+             font_size=11).pack(fill="x", **pad) # type: ignore
 
         self._model_label = tk.Label(
             s, text="no model loaded",
             font=("Helvetica", 9), fg=FG_MED, bg=C_SIDE,
             wraplength=SIDE_W-32, justify="left",
         )
-        self._model_label.pack(anchor="w", **pad, pady=(4, 0))
+        self._model_label.pack(anchor="w", **pad, pady=(4, 0)) # type: ignore
 
         # speed slider
         spd = tk.Frame(s, bg=C_SIDE)
-        spd.pack(fill="x", **pad, pady=(12, 0))
+        spd.pack(fill="x", **pad, pady=(12, 0)) # type: ignore
         tk.Label(spd, text="Speed", font=("Helvetica", 10, "bold"),
                  fg=FG_DARK, bg=C_SIDE).pack(anchor="w")
         sr = tk.Frame(spd, bg=C_SIDE)
@@ -276,18 +280,18 @@ class GUI:
             relief="flat", bd=0, cursor="hand2",
             padx=12, pady=9,
         )
-        self._watch_btn.pack(fill="x", **pad, pady=(10, 4))
+        self._watch_btn.pack(fill="x", **pad, pady=(10, 4)) # type: ignore
         self._watch_btn.bind("<Enter>", lambda e: self._watch_btn.config(bg=C_BTN_AIH))
         self._watch_btn.bind("<Leave>", lambda e: self._watch_btn.config(
             bg=C_BTN_AIH if self._ai_running else C_BTN_AI))
 
         _btn(s, "+ New Game", self._new_game_click,
-             font_size=11).pack(fill="x", **pad)
+             font_size=11).pack(fill="x", **pad) # type: ignore
 
         _divider("SESSION")
 
         sess_f = tk.Frame(s, bg=C_PANEL, padx=14, pady=10)
-        sess_f.pack(fill="x", **pad, pady=(0, 4))
+        sess_f.pack(fill="x", **pad, pady=(0, 4)) # type: ignore
         self._sess_games_var = _stat_row(sess_f, "Games")
         self._sess_score_var = _stat_row(sess_f, "Best score")
         self._sess_tile_var  = _stat_row(sess_f, "Best tile")
@@ -344,12 +348,12 @@ class GUI:
     def _execute_move(self, direction: str):
         old_g  = self.board.board.reshape(4, 4).copy()
         result = self.board.move(direction, track=True)
-        if not result[0]:
+        if not result[0]: # type: ignore
             if self._ai_running:
                 self.root.after(0, self._ai_step)
             return
 
-        changed, anim_moves, spawn_idx = result
+        changed, anim_moves, spawn_idx = result # type: ignore
         new_g = self.board.board.reshape(4, 4).copy()
 
         self._current_moves     += 1
@@ -535,7 +539,7 @@ class GUI:
                     fill=FADE_COLOR, stipple=stipple,
                     outline="", tags="gameover",
                 )
-                current_rect[0] = rid
+                current_rect[0] = rid # type: ignore
                 self.root.after(delay, lambda: _fade_step(idx + 1))
             else:
                 # Fade done — draw final panel
@@ -685,7 +689,7 @@ class GUI:
         from agent import encode
         state  = encode(self.board.board)
         valid  = self.board.valid_actions()
-        action = self._agent._greedy(state, valid)
+        action = self._agent._greedy(state, valid) # type: ignore
         self._execute_move(DIRS[action])
         # next step scheduled in _anim_done after animation completes
 

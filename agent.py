@@ -50,7 +50,7 @@ import torch.nn.functional as F
 from board import Board
 
 # ─────────────────────────────── globals ──────────────────────────────────────
-DEVICE     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE     = torch.device("mps" if torch.mps.is_available() else "cpu")
 DIRS       = ["up", "down", "left", "right"]
 N_CHANNELS = 16   # one-hot channels: log2 values 0 … 15  (covers up to tile 32768)
 

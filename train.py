@@ -114,7 +114,7 @@ def _fmt_row(
     loss:   float,
 ) -> str:
     ep_str  = cyan(f"{ep_lo:>6,}") + dim("-") + cyan(f"{ep_hi:<6,}")
-    avg_sc  = _score_color(np.mean(scores))
+    avg_sc  = _score_color(np.mean(scores)) # type: ignore
     max_sc  = bwhite(f"{max(scores):>9,}")
     avg_mv  = bblue(f"{np.mean(moves):>9.1f}")
     med_til = _tile_color(int(np.median(tiles)))
